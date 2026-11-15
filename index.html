@@ -538,6 +538,12 @@
         adminSec.classList.add("flex");
         tabAdminBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#1E3A8A] text-white shadow-sm transition";
         tabHostBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-600 hover:text-slate-900 transition";
+        if (localAgentWs) {
+          try {
+            localAgentWs.close();
+          } catch {}
+          localAgentWs = null;
+        }
       }
     }
 

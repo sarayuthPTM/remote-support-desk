@@ -627,8 +627,7 @@ class RemoteAgentApp:
     def __init__(self) -> None:
         self.controller = Win32InputController()
         self.paused = False
-        self.active_ws: ServerConnection | None = None
-        self.active_origin: str | None = None
+        self.clients: set[ServerConnection] = set()
         self.session_approved_origins: set[str] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.stop_event: asyncio.Event | None = None
@@ -642,7 +641,7 @@ class RemoteAgentApp:
     def _current_state(self) -> str:
         if self.paused:
             return "paused"
-        if self.active_ws is not None:
+        if self.clients:
             return "connected"
         return "waiting"
 
@@ -652,7 +651,7 @@ class RemoteAgentApp:
         if state == "paused":
             return f"หยุดควบคุมชั่วคราว ({admin_label})"
         if state == "connected":
-            return f"กำลังเชื่อมต่อควบคุมเครื่อง ({admin_label})"
+            return f"กำลังเชื่อมต่อควบคุมเครื่อง ({len(self.clients)} แท็บ, {admin_label})"
         return f"พร้อมเชื่อมต่อ ws://{HOST}:{PORT} ({admin_label})"
 
     def refresh_tray(self) -> None:
@@ -707,15 +706,7 @@ class RemoteAgentApp:
     async def handle_client(self, ws: ServerConnection) -> None:
         origin = ws.request.headers.get("Origin") if ws.request else None
 
-        # Close any stale previous browser tab connection cleanly
-        if self.active_ws is not None and self.active_ws is not ws:
-            try:
-                await self.active_ws.close(code=4000, reason="Replaced by newer session")
-            except Exception:
-                pass
-
-        self.active_ws = ws
-        self.active_origin = origin
+        self.clients.add(ws)
         self.refresh_tray()
         await self._send_status(ws)
 
@@ -750,11 +741,10 @@ class RemoteAgentApp:
         except ConnectionClosed:
             pass
         finally:
-            self.controller.release_all_inputs()
-            if self.active_ws is ws:
-                self.active_ws = None
-                self.active_origin = None
-                self.refresh_tray()
+            self.clients.discard(ws)
+            if not self.clients:
+                self.controller.release_all_inputs()
+            self.refresh_tray()
 
     async def _dispatch_control_event(self, msg_type: str | None, msg: dict[str, Any]) -> None:
         try:
@@ -818,21 +808,29 @@ class RemoteAgentApp:
             if self.tray_icon:
                 self.tray_icon.stop()
 
+    async def _broadcast_status(self) -> None:
+        for ws in list(self.clients):
+            await self._send_status(ws)
+
+    async def _close_all_clients(self) -> None:
+        for ws in list(self.clients):
+            try:
+                await ws.close(code=4001, reason="Disconnected from system tray")
+            except Exception:
+                pass
+
     def _on_toggle_pause(self, icon: pystray.Icon, item: Item) -> None:
         self.paused = not self.paused
         if self.paused:
             self.controller.release_all_inputs()
-        if self.loop and self.active_ws:
-            asyncio.run_coroutine_threadsafe(self._send_status(self.active_ws), self.loop)
+        if self.loop and self.clients:
+            asyncio.run_coroutine_threadsafe(self._broadcast_status(), self.loop)
         self.refresh_tray()
 
     def _on_disconnect_client(self, icon: pystray.Icon, item: Item) -> None:
         self.controller.release_all_inputs()
-        if self.loop and self.active_ws:
-            asyncio.run_coroutine_threadsafe(
-                self.active_ws.close(code=4001, reason="Disconnected from system tray"),
-                self.loop,
-            )
+        if self.loop and self.clients:
+            asyncio.run_coroutine_threadsafe(self._close_all_clients(), self.loop)
 
     def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
         self.controller.release_all_inputs()
@@ -852,9 +850,9 @@ class RemoteAgentApp:
                 self._on_toggle_pause,
             ),
             Item(
-                "ตัดการเชื่อมต่อปัจจุบัน",
+                "ตัดการเชื่อมต่อทั้งหมด",
                 self._on_disconnect_client,
-                enabled=lambda item: self.active_ws is not None,
+                enabled=lambda item: bool(self.clients),
             ),
             pystray.Menu.SEPARATOR,
             Item("ออกจากโปรแกรม (Exit)", self._on_exit),
