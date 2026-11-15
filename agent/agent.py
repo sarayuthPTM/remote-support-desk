@@ -6,18 +6,22 @@ System Tray + UAC Administrator + Loopback WebSocket (127.0.0.1:8765) + Win32 Se
 from __future__ import annotations
 
 import asyncio
+import base64
 import ctypes
 from ctypes import wintypes
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
+import tkinter as tk
 from typing import Any
 import webbrowser
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 from pystray import MenuItem as Item
 from websockets.asyncio.server import ServerConnection, serve
@@ -25,7 +29,8 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.1.0"
+AGENT_VERSION = "2.2.0"
+WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
 
@@ -141,6 +146,12 @@ user32.CloseClipboard.argtypes = ()
 user32.CloseClipboard.restype = wintypes.BOOL
 user32.MessageBoxW.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT)
 user32.MessageBoxW.restype = ctypes.c_int
+user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+user32.FindWindowW.restype = wintypes.HWND
+user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+user32.ShowWindow.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+user32.SetForegroundWindow.restype = wintypes.BOOL
 
 kernel32.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
 kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
@@ -311,6 +322,59 @@ def ensure_admin_elevation() -> None:
         sys.exit(0)
 
 
+def get_desktop_dir() -> str:
+    """Resolve the user's real Windows Desktop directory (including OneDrive redirection)."""
+    buf = ctypes.create_unicode_buffer(260)
+    if shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf) == 0 and buf.value:
+        return buf.value
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
+def install_desktop_shortcut() -> tuple[bool, str]:
+    """Install RemoteAgent.exe into %LOCALAPPDATA%\\AnySupport and create a Desktop shortcut."""
+    try:
+        if getattr(sys, "frozen", False):
+            local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            install_dir = os.path.join(local_app, "AnySupport")
+            os.makedirs(install_dir, exist_ok=True)
+            target_exe = os.path.join(install_dir, "RemoteAgent.exe")
+            current_exe = os.path.abspath(sys.executable)
+            if current_exe.lower() != os.path.abspath(target_exe).lower():
+                shutil.copy2(current_exe, target_exe)
+        else:
+            candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "RemoteAgent.exe"))
+            if not os.path.isfile(candidate):
+                return False, "ไม่พบไฟล์ RemoteAgent.exe สำหรับสร้างทางลัด"
+            target_exe = candidate
+
+        desktop_dir = get_desktop_dir()
+        if not os.path.isdir(desktop_dir):
+            return False, "ไม่พบโฟลเดอร์ Desktop"
+
+        shortcut_path = os.path.join(desktop_dir, "AnySupport ช่วยเหลือระยะไกล.lnk")
+        ps_script = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            f"$sc = $ws.CreateShortcut('{shortcut_path.replace(chr(39), chr(39)*2)}'); "
+            f"$sc.TargetPath = '{target_exe.replace(chr(39), chr(39)*2)}'; "
+            f"$sc.WorkingDirectory = '{os.path.dirname(target_exe).replace(chr(39), chr(39)*2)}'; "
+            f"$sc.IconLocation = '{target_exe.replace(chr(39), chr(39)*2)},0'; "
+            "$sc.Description = 'AnySupport Web - ระบบช่วยเหลือและซ่อมคอมพิวเตอร์ระยะไกล'; "
+            "$sc.Save()"
+        )
+        encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            timeout=10,
+        )
+        if res.returncode == 0 and os.path.isfile(shortcut_path):
+            return True, shortcut_path
+        return False, "สร้างทางลัดไม่สำเร็จ"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def open_web_portal() -> None:
     """Open the AnySupport Web portal in the default browser."""
     try:
@@ -319,10 +383,22 @@ def open_web_portal() -> None:
         pass
 
 
+def focus_existing_window() -> None:
+    """Restore and focus an existing RemoteAgent control window if found."""
+    try:
+        hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
 def acquire_single_instance() -> wintypes.HANDLE | None:
-    """Ensure only one instance runs; if already open, bring up the web portal."""
+    """Ensure only one instance runs; if already open, focus window and open web."""
     handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        focus_existing_window()
         open_web_portal()
         return None
     return handle
@@ -627,7 +703,7 @@ def create_tray_icon_image(state: str = "waiting") -> Image.Image:
 
 
 class RemoteAgentApp:
-    """Coordinates the asyncio WebSocket server and Windows System Tray UI."""
+    """Coordinates the asyncio WebSocket server, mini control GUI, and System Tray UI."""
 
     def __init__(self) -> None:
         self.controller = Win32InputController()
@@ -637,6 +713,12 @@ class RemoteAgentApp:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.stop_event: asyncio.Event | None = None
         self.tray_icon: pystray.Icon | None = None
+        self.root: tk.Tk | None = None
+        self._tk_icon: ImageTk.PhotoImage | None = None
+        self._status_label: tk.Label | None = None
+        self._pause_btn: tk.Button | None = None
+        self._dot_label: tk.Label | None = None
+        self._closing = False
         self._icon_cache = {
             "waiting": create_tray_icon_image("waiting"),
             "connected": create_tray_icon_image("connected"),
@@ -656,16 +738,53 @@ class RemoteAgentApp:
         if state == "paused":
             return f"หยุดควบคุมชั่วคราว ({admin_label})"
         if state == "connected":
-            return f"กำลังเชื่อมต่อควบคุมเครื่อง ({len(self.clients)} แท็บ, {admin_label})"
+            return f"เชื่อมต่อหน้าเว็บแล้ว ({len(self.clients)} แท็บ, {admin_label})"
         return f"พร้อมเชื่อมต่อ ws://{HOST}:{PORT} ({admin_label})"
 
     def refresh_tray(self) -> None:
-        if not self.tray_icon:
+        if self.tray_icon:
+            state = self._current_state()
+            try:
+                self.tray_icon.icon = self._icon_cache[state]
+                self.tray_icon.title = f"AnySupport RemoteAgent - {self._status_text()}"
+                self.tray_icon.update_menu()
+            except Exception:
+                pass
+        self._schedule_ui_refresh()
+
+    def _schedule_ui_refresh(self) -> None:
+        if self.root and not self._closing:
+            try:
+                self.root.after(0, self._update_ui_widgets)
+            except Exception:
+                pass
+
+    def _update_ui_widgets(self) -> None:
+        if not self.root or self._closing:
             return
         state = self._current_state()
-        self.tray_icon.icon = self._icon_cache[state]
-        self.tray_icon.title = f"AnySupport RemoteAgent - {self._status_text()}"
-        self.tray_icon.update_menu()
+        color_map = {
+            "waiting": "#D97706",    # Amber
+            "connected": "#059669",  # Emerald
+            "paused": "#DC2626",     # Rose
+        }
+        if self._dot_label:
+            self._dot_label.config(fg=color_map.get(state, "#D97706"))
+        if self._status_label:
+            self._status_label.config(text=self._status_text())
+        if self._pause_btn:
+            if self.paused:
+                self._pause_btn.config(
+                    text="▶ เปิดรับควบคุมต่อ",
+                    bg="#059669",
+                    activebackground="#047857",
+                )
+            else:
+                self._pause_btn.config(
+                    text="⏸ หยุดควบคุมชั่วคราว",
+                    bg="#D97706",
+                    activebackground="#B45309",
+                )
 
     async def _send_status(self, ws: ServerConnection) -> None:
         width, height = self.controller.get_screen_size()
@@ -824,13 +943,16 @@ class RemoteAgentApp:
             except Exception:
                 pass
 
-    def _on_toggle_pause(self, icon: pystray.Icon, item: Item) -> None:
+    def _toggle_pause(self) -> None:
         self.paused = not self.paused
         if self.paused:
             self.controller.release_all_inputs()
         if self.loop and self.clients:
             asyncio.run_coroutine_threadsafe(self._broadcast_status(), self.loop)
         self.refresh_tray()
+
+    def _on_toggle_pause(self, icon: pystray.Icon, item: Item) -> None:
+        self._toggle_pause()
 
     def _on_disconnect_client(self, icon: pystray.Icon, item: Item) -> None:
         self.controller.release_all_inputs()
@@ -840,36 +962,231 @@ class RemoteAgentApp:
     def _on_open_web(self, icon: pystray.Icon, item: Item) -> None:
         open_web_portal()
 
+    def _show_window(self) -> None:
+        if self.root and not self._closing:
+            self.root.after(0, self._restore_window_on_main)
+
+    def _restore_window_on_main(self) -> None:
+        if not self.root or self._closing:
+            return
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _hide_to_tray(self) -> None:
+        if self.root and not self._closing:
+            self.root.withdraw()
+
     def _auto_open_web_if_no_client(self) -> None:
-        if not self.clients:
+        if not self.clients and not self._closing:
             open_web_portal()
 
     def _on_tray_ready(self, icon: pystray.Icon) -> None:
         icon.visible = True
-        try:
-            if icon.HAS_NOTIFICATION:
-                icon.notify(
-                    "โปรแกรมพร้อมใช้งานที่มุมขวาล่างแล้ว (คลิกไอคอนเพื่อเปิดหน้าเว็บ)",
-                    "AnySupport RemoteAgent",
-                )
-        except Exception:
-            pass
-        timer = threading.Timer(2.5, self._auto_open_web_if_no_client)
+        if getattr(sys, "frozen", False):
+            threading.Thread(target=install_desktop_shortcut, daemon=True).start()
+        timer = threading.Timer(1.5, self._auto_open_web_if_no_client)
         timer.daemon = True
         timer.start()
 
-    def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
+    def _shutdown_all(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
         self.controller.release_all_inputs()
         if self.loop and self.stop_event:
-            self.loop.call_soon_threadsafe(self.stop_event.set)
-        icon.stop()
+            try:
+                self.loop.call_soon_threadsafe(self.stop_event.set)
+            except Exception:
+                pass
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+        if self.root:
+            try:
+                self.root.after(0, self.root.destroy)
+            except Exception:
+                pass
+
+    def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
+        self._shutdown_all()
+
+    def _build_control_window(self) -> tk.Tk:
+        root = tk.Tk()
+        root.title(WINDOW_TITLE)
+        root.configure(bg="#F8FAFC")
+        root.resizable(False, False)
+
+        # Center mini control card on screen
+        win_w, win_h = 390, 305
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        pos_x = max(0, (screen_w - win_w) // 2)
+        pos_y = max(0, (screen_h - win_h) // 2)
+        root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+
+        self._tk_icon = ImageTk.PhotoImage(self._icon_cache["waiting"])
+        root.iconphoto(True, self._tk_icon)
+        root.protocol("WM_DELETE_WINDOW", self._shutdown_all)
+
+        # Navy Header (#1E3A8A)
+        header = tk.Frame(root, bg="#1E3A8A", padx=16, pady=12)
+        header.pack(fill="x")
+
+        tk.Label(
+            header,
+            text="AnySupport RemoteAgent",
+            font=("Segoe UI", 12, "bold"),
+            fg="#FFFFFF",
+            bg="#1E3A8A",
+        ).pack(side="left")
+
+        admin_badge = "ADMIN" if is_admin() else "USER"
+        tk.Label(
+            header,
+            text=admin_badge,
+            font=("Segoe UI", 8, "bold"),
+            fg="#1E3A8A",
+            bg="#FBBF24",
+            padx=8,
+            pady=2,
+        ).pack(side="right")
+
+        # Status Card
+        body = tk.Frame(root, bg="#F8FAFC", padx=16, pady=14)
+        body.pack(fill="both", expand=True)
+
+        status_card = tk.Frame(body, bg="#FFFFFF", highlightbackground="#CBD5E1", highlightthickness=1, padx=12, pady=10)
+        status_card.pack(fill="x", pady=(0, 12))
+
+        status_row = tk.Frame(status_card, bg="#FFFFFF")
+        status_row.pack(fill="x")
+
+        self._dot_label = tk.Label(status_row, text="●", font=("Segoe UI", 12), fg="#D97706", bg="#FFFFFF")
+        self._dot_label.pack(side="left", padx=(0, 6))
+
+        self._status_label = tk.Label(
+            status_row,
+            text=self._status_text(),
+            font=("Segoe UI", 9, "bold"),
+            fg="#0F172A",
+            bg="#FFFFFF",
+            anchor="w",
+        )
+        self._status_label.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            status_card,
+            text=f"เวอร์ชัน {AGENT_VERSION}  •  พอร์ต {HOST}:{PORT}",
+            font=("Segoe UI", 8),
+            fg="#64748B",
+            bg="#FFFFFF",
+            anchor="w",
+        ).pack(fill="x", pady=(2, 0))
+
+        # Action Buttons
+        tk.Button(
+            body,
+            text="🌐  เปิดหน้าเว็บ AnySupport Web",
+            command=open_web_portal,
+            font=("Segoe UI", 10, "bold"),
+            bg="#1E3A8A",
+            fg="#FFFFFF",
+            activebackground="#172554",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            cursor="hand2",
+            pady=8,
+        ).pack(fill="x", pady=(0, 8))
+
+        mid_row = tk.Frame(body, bg="#F8FAFC")
+        mid_row.pack(fill="x", pady=(0, 8))
+
+        self._pause_btn = tk.Button(
+            mid_row,
+            text="⏸ หยุดควบคุมชั่วคราว",
+            command=self._toggle_pause,
+            font=("Segoe UI", 9, "bold"),
+            bg="#D97706",
+            fg="#FFFFFF",
+            activebackground="#B45309",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            cursor="hand2",
+            pady=6,
+        )
+        self._pause_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        tk.Button(
+            mid_row,
+            text="🔽 ซ่อนลงมุมขวาล่าง",
+            command=self._hide_to_tray,
+            font=("Segoe UI", 9),
+            bg="#E2E8F0",
+            fg="#1E293B",
+            activebackground="#CBD5E1",
+            relief="flat",
+            cursor="hand2",
+            pady=6,
+        ).pack(side="right", fill="x", expand=True, padx=(4, 0))
+
+        tk.Button(
+            body,
+            text="📌  สร้างไอคอนบนหน้าจอ (Desktop)",
+            command=self._on_create_shortcut_clicked,
+            font=("Segoe UI", 9),
+            bg="#EFF6FF",
+            fg="#1E3A8A",
+            activebackground="#DBEAFE",
+            relief="flat",
+            cursor="hand2",
+            pady=5,
+        ).pack(fill="x", pady=(0, 8))
+
+        tk.Button(
+            body,
+            text="❌  ปิดโปรแกรม RemoteAgent",
+            command=self._shutdown_all,
+            font=("Segoe UI", 9, "bold"),
+            bg="#DC2626",
+            fg="#FFFFFF",
+            activebackground="#B91C1C",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            cursor="hand2",
+            pady=6,
+        ).pack(fill="x")
+
+        return root
+
+    def _on_create_shortcut_clicked(self) -> None:
+        ok, info = install_desktop_shortcut()
+        if ok:
+            user32.MessageBoxW(
+                None,
+                f"สร้างไอคอนไว้บน Desktop เรียบร้อยแล้ว:\n{info}",
+                WINDOW_TITLE,
+                MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
+            )
+        else:
+            user32.MessageBoxW(
+                None,
+                f"ไม่สามารถสร้างไอคอนบน Desktop ได้: {info}",
+                WINDOW_TITLE,
+                MB_OK | MB_TOPMOST,
+            )
 
     def run(self) -> None:
         ws_thread = threading.Thread(target=self._run_ws_thread, daemon=True)
         ws_thread.start()
 
+        self.root = self._build_control_window()
+
         menu = pystray.Menu(
-            Item("🌐 เปิดหน้าเว็บ AnySupport Web", self._on_open_web, default=True),
+            Item("🔼 แสดงหน้าต่างควบคุม", lambda icon, item: self._show_window(), default=True),
+            Item("🌐 เปิดหน้าเว็บ AnySupport Web", self._on_open_web),
             pystray.Menu.SEPARATOR,
             Item(lambda item: f"สถานะ: {self._status_text()}", None, enabled=False),
             pystray.Menu.SEPARATOR,
@@ -892,7 +1209,8 @@ class RemoteAgentApp:
             f"AnySupport RemoteAgent - {self._status_text()}",
             menu,
         )
-        self.tray_icon.run(setup=self._on_tray_ready)
+        self.tray_icon.run_detached(setup=self._on_tray_ready)
+        self.root.mainloop()
 
 
 def main() -> None:
