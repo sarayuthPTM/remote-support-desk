@@ -41,7 +41,7 @@ if errorlevel 1 (
 )
 
 echo [4/4] กำลังคัดลอก RemoteAgent.exe ไปยังโฟลเดอร์หลัก...
-copy /y "dist\RemoteAgent.exe" ".\RemoteAgent.exe" >nul
+copy /y "dist\RemoteAgent.exe" "..\RemoteAgent.exe" >nul
 if errorlevel 1 (
     echo [ERROR] คัดลอกไฟล์ RemoteAgent.exe ไม่สำเร็จ
     pause
@@ -50,6 +50,6 @@ if errorlevel 1 (
 
 echo.
 echo [SUCCESS] สร้างไฟล์ RemoteAgent.exe เรียบร้อยแล้ว!
-echo ตำแหน่งไฟล์: %CD%\RemoteAgent.exe
+echo ตำแหน่งไฟล์: %~dp0..\RemoteAgent.exe
 echo.
 pause

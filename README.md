@@ -7,10 +7,11 @@
 ## โครงสร้างไฟล์
 
 - `index.html` — หน้าเว็บแอปพลิเคชัน (รองรับทั้งโหมด **ผู้ขอความช่วยเหลือ / Host** และ **ผู้ช่วยเหลือ / Admin**)
-- `agent.py` — โปรแกรมฝั่ง Windows (System Tray Icon + WebSocket `127.0.0.1:8765` + Win32 `SendInput` DPI-Aware + UAC Admin)
-- `requirements.txt` — รายการแพ็กเกจ Python ที่ต้องใช้
-- `build_exe.bat` — สคริปต์สร้างไฟล์ `RemoteAgent.exe` (ไม่มีหน้าต่างดำ + ขอสิทธิ์ Administrator อัตโนมัติ)
-- `vercel.json`, `manifest.json`, `package.json` — ไฟล์ตั้งค่าสำหรับ Deploy ขึ้น GitHub + Vercel
+- `RemoteAgent.exe` — โปรแกรมฝั่ง Windows พร้อมใช้งาน (ดาวน์โหลดได้โดยตรงจากหน้าเว็บ)
+- `agent/agent.py` — ซอร์สโค้ดโปรแกรมฝั่ง Windows (System Tray Icon + WebSocket `127.0.0.1:8765` + Win32 `SendInput` DPI-Aware + UAC Admin)
+- `agent/requirements.txt` — รายการแพ็กเกจ Python ที่ต้องใช้
+- `agent/build_exe.bat` — สคริปต์สร้างไฟล์ `RemoteAgent.exe` (ไม่มีหน้าต่างดำ + ขอสิทธิ์ Administrator อัตโนมัติ)
+- `vercel.json`, `manifest.json`, `package.json`, `.vercelignore` — ไฟล์ตั้งค่าสำหรับ Deploy ขึ้น GitHub + Vercel
 
 ---
 
@@ -24,8 +25,8 @@
 
 2. **รัน Agent ฝั่ง Python (หรือเปิด `RemoteAgent.exe`):**
    ```bash
-   pip install -r requirements.txt
-   python agent.py
+   pip install -r agent/requirements.txt
+   python agent/agent.py
    ```
    > หมายเหตุ: หากไม่ได้เปิดด้วยสิทธิ์ Administrator ตัวโปรแกรมจะขอ UAC Elevation อัตโนมัติเพื่อให้สามารถควบคุมหน้าต่างระบบอย่าง Task Manager หรือหน้าต่างติดตั้งโปรแกรมได้
 
@@ -33,9 +34,9 @@
 
 ## การ Build ไฟล์ `RemoteAgent.exe`
 
-ดับเบิลคลิกไฟล์ `build_exe.bat` หรือรันใน CMD/PowerShell:
+ดับเบิลคลิกไฟล์ `agent/build_exe.bat` หรือรันใน CMD/PowerShell:
 ```bat
-build_exe.bat
+agent\build_exe.bat
 ```
 จะได้ไฟล์ `RemoteAgent.exe` อยู่ในโฟลเดอร์โปรเจกต์ทันที (พร้อมฝัง Manifest `--uac-admin` และรันแบบ System Tray `--windowed`)
 

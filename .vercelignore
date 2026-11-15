@@ -1,0 +1,10 @@
+agent/
+__pycache__/
+build/
+dist/
+*.spec
+*.pyc
+*.ico
+.git/
+.gitignore
+README.md
