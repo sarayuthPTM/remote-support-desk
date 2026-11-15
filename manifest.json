@@ -1,0 +1,10 @@
+{
+  "name": "AnySupport Web - ระบบช่วยเหลือและซ่อมคอมพิวเตอร์ระยะไกล",
+  "short_name": "AnySupport",
+  "description": "ระบบแชร์หน้าจอและควบคุมคอมพิวเตอร์ระยะไกลสำหรับงานบริการช่วยเหลือด้านไอที",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#1E3A8A",
+  "lang": "th"
+}

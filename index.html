@@ -1,0 +1,1646 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1E3A8A" />
+  <meta property="og:title" content="AnySupport Web - ระบบช่วยเหลือและซ่อมคอมพิวเตอร์ระยะไกล" />
+  <meta property="og:description" content="ระบบแชร์หน้าจอ ควบคุมเมาส์/คีย์บอร์ด วาดชี้เป้า สนทนาด้วยเสียง และส่งไฟล์แบบ Peer-to-Peer" />
+  <meta property="og:type" content="website" />
+  <title>AnySupport Web - ระบบช่วยเหลือและซ่อมคอมพิวเตอร์ระยะไกล</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231E3A8A'/%3E%3Ccircle cx='32' cy='32' r='16' fill='none' stroke='%23FBBF24' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23FFFFFF'/%3E%3C/svg%3E" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Prompt', 'Sarabun', sans-serif; }
+    .cursor-crosshair-custom { cursor: crosshair; }
+    .cursor-pen-custom { cursor: cell; }
+    #remoteScreenContainer:fullscreen {
+      background-color: #0f172a;
+      border-radius: 0;
+      border: none;
+      width: 100vw;
+      height: 100vh;
+    }
+    #remoteScreenContainer:fullscreen #remoteVideo {
+      max-height: 100vh;
+      max-width: 100vw;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 9999px;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+  <!-- ================= HEADER ================= -->
+  <header class="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-[#1E3A8A] flex items-center justify-center text-amber-400 font-bold text-xl shadow-sm">
+          AS
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-[#1E3A8A] leading-tight">AnySupport Web</h1>
+          <p class="text-xs text-slate-500">ระบบแชร์หน้าจอและควบคุมคอมพิวเตอร์ระยะไกล</p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <!-- ปุ่มสลับโหมด -->
+        <div class="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+          <button id="tabHostBtn" onclick="switchMode('host')" class="px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#1E3A8A] text-white shadow-sm transition">
+            1. ขอความช่วยเหลือ (แชร์จอ)
+          </button>
+          <button id="tabAdminBtn" onclick="switchMode('admin')" class="px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-600 hover:text-slate-900 transition">
+            2. ผู้ช่วยเหลือ (ควบคุมเครื่องอื่น)
+          </button>
+        </div>
+
+        <button onclick="openIceModal()" title="ตั้งค่า ICE / TURN Server" class="px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-medium transition">
+          ⚙️ TURN
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
+
+  <!-- ================= MAIN CONTENT ================= -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6">
+
+    <!-- =====================================================================
+         โหมดที่ 1: ฝั่งผู้ขอความช่วยเหลือ (HOST)
+         ===================================================================== -->
+    <section id="hostSection" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- การ์ดซ้าย: รหัส 6 หลัก และการตั้งค่า -->
+      <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+        <div>
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <span class="text-xs font-semibold px-2.5 py-1 rounded-md bg-blue-50 text-[#1E3A8A] border border-blue-200">
+              ผู้ขอความช่วยเหลือ
+            </span>
+            <span id="agentStatusBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200">
+              ● กำลังตรวจสอบ RemoteAgent.exe...
+            </span>
+          </div>
+
+          <h2 class="text-xl font-bold text-slate-900 mb-1">รหัสประจำเครื่องของคุณ</h2>
+          <p class="text-xs text-slate-500 mb-4">กดปุ่มเริ่มแชร์หน้าจอ แล้วแจ้งรหัส 6 หลักนี้ให้ผู้ช่วยเหลือทราบ</p>
+
+          <!-- กล่องแสดงรหัส 6 หลัก -->
+          <div class="bg-slate-50 border-2 border-amber-400 rounded-2xl p-5 text-center mb-4 shadow-inner">
+            <div id="roomPinDisplay" class="text-4xl font-bold tracking-[0.25em] text-[#1E3A8A] select-all">
+              ------
+            </div>
+            <p id="hostStatusText" class="text-xs text-slate-500 mt-2">ยังไม่ได้เริ่มสร้างห้อง</p>
+          </div>
+
+          <!-- ตัวเลือกความปลอดภัย -->
+          <label class="flex items-center gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 mb-4 cursor-pointer text-xs text-slate-700 font-medium">
+            <input id="requireApprovalToggle" type="checkbox" checked class="accent-[#1E3A8A] w-4 h-4" />
+            <span>ต้องกด "อนุญาต" ก่อนให้ผู้ช่วยเหลือเข้าดูและควบคุมเครื่อง</span>
+          </label>
+
+          <!-- ปุ่มสั่งงานหลัก -->
+          <div class="space-y-2.5">
+            <a id="downloadAgentLink" href="./RemoteAgent.exe" download="RemoteAgent.exe" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm transition flex items-center justify-center gap-2 text-sm">
+              <span>⬇ ดาวน์โหลดโปรแกรมจิ๋ว (RemoteAgent.exe)</span>
+            </a>
+
+            <button id="startHostBtn" onclick="startHostSession()" class="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 font-bold shadow-sm transition flex items-center justify-center gap-2 text-sm">
+              <span>เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก</span>
+            </button>
+
+            <button id="stopHostBtn" onclick="stopHostSession()" class="hidden w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm">
+              หยุดแชร์หน้าจอทันที (ตัดการเชื่อมต่อ)
+            </button>
+          </div>
+        </div>
+
+        <!-- ขั้นตอนการใช้งาน -->
+        <div class="mt-6 pt-4 border-t border-slate-200 text-xs text-slate-500 space-y-1.5">
+          <p class="font-semibold text-[#1E3A8A]">วิธีใช้งานสำหรับผู้ขอความช่วยเหลือ:</p>
+          <p>1. ดาวน์โหลดและเปิดไฟล์ <code class="text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded border">RemoteAgent.exe</code> (กด Yes เมื่อ Windows ถามสิทธิ์ Admin)</p>
+          <p>2. สังเกตป้ายสถานะด้านบนจะเปลี่ยนเป็นสีเขียว <span class="text-emerald-600 font-semibold">"พร้อมควบคุมเมาส์และคีย์บอร์ด"</span> (มีไอคอนอยู่ที่มุมขวาล่าง)</p>
+          <p>3. กดปุ่มเริ่มแชร์หน้าจอ เลือก <strong>"ทั้งหน้าจอ (Entire Screen)"</strong></p>
+        </div>
+      </div>
+
+      <!-- การ์ดขวา: ตัวอย่างหน้าจอ + รับข้อความ + รับไฟล์ -->
+      <div class="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col gap-4">
+        <div class="flex items-center justify-between">
+          <h3 class="font-bold text-slate-800">หน้าจอที่กำลังแชร์และช่องทางรับไฟล์</h3>
+          <span id="webrtcHostState" class="text-xs font-medium text-slate-500">สถานะ: รอการเชื่อมต่อ</span>
+        </div>
+
+        <!-- จอภาพ Preview ของผู้ขอความช่วยเหลือ พร้อม Canvas แสดงเส้นที่ช่างวาดซ้อนพอดีกับวิดีโอ -->
+        <div class="relative flex-1 min-h-[280px] bg-slate-900 rounded-xl border border-slate-200 overflow-hidden flex items-center justify-center p-1">
+          <div class="relative inline-block max-w-full">
+            <video id="localPreviewVideo" autoplay muted playsinline class="max-w-full max-h-[380px] w-auto object-contain block"></video>
+            <canvas id="hostAnnotateCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+          </div>
+          <div id="localVideoPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 text-sm px-4 text-center">
+            <span>ภาพหน้าจอของคุณจะแสดงที่นี่เมื่อเริ่มกดแชร์</span>
+          </div>
+        </div>
+
+        <!-- กล่องรับข้อความ และ ไฟล์จากผู้ช่วยเหลือ -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-semibold text-[#1E3A8A]">ข้อความ / ลิงก์จากผู้ช่วยเหลือ:</span>
+              <button id="copyTextBtn" onclick="copyReceivedText()" class="text-xs bg-white hover:bg-slate-100 px-2.5 py-1 rounded-md border border-slate-300 text-slate-700 font-medium transition">
+                คัดลอก
+              </button>
+            </div>
+            <input id="hostReceivedText" type="text" readonly placeholder="ยังไม่มีข้อความส่งมา..." class="w-full bg-white text-sm text-slate-800 px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none" />
+          </div>
+
+          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+            <span class="text-xs font-semibold text-[#1E3A8A] block mb-1.5">ไฟล์ที่ได้รับจากผู้ช่วยเหลือ:</span>
+            <div id="hostReceivedFilesList" class="text-xs text-slate-500 max-h-24 overflow-y-auto space-y-1">
+              <p id="hostFilesEmptyMsg">ยังไม่มีไฟล์ส่งมา...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         โหมดที่ 2: ฝั่งผู้ช่วยเหลือ (ADMIN / CONTROLLER)
+         ===================================================================== -->
+    <section id="adminSection" class="hidden flex-col gap-4">
+      <!-- แถบควบคุมหลักด้านบน -->
+      <div class="bg-white border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+        <!-- กรอกรหัส 6 หลัก -->
+        <div class="flex flex-wrap items-center gap-2">
+          <input id="joinPinInput" type="text" inputmode="numeric" maxlength="6" placeholder="รหัส 6 หลัก" class="w-36 bg-slate-50 border border-slate-300 focus:border-[#1E3A8A] rounded-xl px-3 py-2 text-center text-lg font-bold tracking-widest text-[#1E3A8A] focus:outline-none" />
+          <button id="joinRoomBtn" onclick="joinRemoteRoom()" class="bg-[#1E3A8A] hover:bg-blue-900 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold px-4 py-2 rounded-xl shadow-sm transition text-sm flex items-center gap-2">
+            <span>เชื่อมต่อ</span>
+          </button>
+          <button id="disconnectAdminBtn" onclick="disconnectAdminSession()" class="hidden bg-rose-600 hover:bg-rose-500 text-white font-semibold px-3 py-2 rounded-xl shadow-sm transition text-sm">
+            ตัดการเชื่อมต่อ
+          </button>
+          <span id="adminConnStatus" class="text-xs text-slate-500 ml-1 font-medium">พร้อมเชื่อมต่อ</span>
+        </div>
+
+        <!-- เครื่องมือควบคุมหน้าจอ / วาดจอ / ไมค์ / แคปภาพ -->
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 cursor-pointer text-xs font-semibold text-slate-700">
+            <input id="enableControlToggle" type="checkbox" checked class="accent-[#1E3A8A] w-4 h-4" />
+            <span>ควบคุมเมาส์/คีย์บอร์ด</span>
+          </label>
+
+          <button id="drawModeBtn" onclick="toggleDrawMode()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition">
+            ✏️ ปากกาวาดจอ: ปิด
+          </button>
+
+          <button onclick="clearAnnotations()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-medium transition">
+            🧹 ล้างเส้นวาด
+          </button>
+
+          <button id="micToggleBtn" onclick="toggleVoiceCall()" class="bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition flex items-center gap-1.5">
+            <span>🎤 เปิดไมค์คุย</span>
+          </button>
+
+          <button id="remoteAudioBtn" onclick="toggleRemoteAudio()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-medium transition">
+            🔇 เสียงปลายทาง: ปิด
+          </button>
+
+          <button onclick="takeSnapshot()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-medium transition">
+            📸 แคปหน้าจอ
+          </button>
+
+          <button onclick="toggleFullscreen()" class="bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs px-3 py-2 rounded-xl font-bold transition">
+            ⛶ ขยายเต็มจอ
+          </button>
+        </div>
+      </div>
+
+      <!-- แผงเครื่องมือช่างซ่อมคอมด่วน (IT Support Quick Toolbox) -->
+      <div class="bg-white border border-slate-200 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-2 shadow-sm">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-xs font-bold text-[#1E3A8A] mr-2">🛠️ คำสั่งด่วนช่างซ่อมคอม:</span>
+          <button onclick="sendSysCommand('taskmgr')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            Task Manager
+          </button>
+          <button onclick="sendSysCommand('ncpa.cpl')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            ตั้งค่าเน็ต (ncpa.cpl)
+          </button>
+          <button onclick="sendSysCommand('devmgmt.msc')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            เช็คไดรเวอร์ (Device Mgr)
+          </button>
+          <button onclick="sendSysCommand('appwiz.cpl')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            ถอนโปรแกรม (appwiz.cpl)
+          </button>
+          <button onclick="sendSysCommand('temp')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            เปิดโฟลเดอร์ขยะ (%temp%)
+          </button>
+          <button onclick="sendSysCommand('cmd')" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            เปิด CMD
+          </button>
+          <button onclick="sendShortcut(['win','d'])" class="bg-slate-100 hover:bg-blue-50 hover:text-[#1E3A8A] border border-slate-200 text-xs px-2.5 py-1.5 rounded-lg font-medium transition">
+            ดู Desktop
+          </button>
+        </div>
+      </div>
+
+      <!-- แถบส่งข้อความภาษาไทย และ ส่งไฟล์ P2P -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div class="lg:col-span-2 bg-white border border-slate-200 rounded-2xl px-4 py-2.5 flex flex-wrap items-center gap-2 shadow-sm">
+          <span class="text-xs text-[#1E3A8A] whitespace-nowrap font-bold">พิมพ์ภาษาไทย/คำสั่ง:</span>
+          <input id="adminTextInput" type="text" placeholder="พิมพ์ข้อความภาษาไทย หรือคำสั่ง แล้วกดปุ่มส่งไปวาง (กด Enter เพื่อส่งวางทันที)..." class="flex-1 min-w-[180px] bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-sm text-slate-800 focus:outline-none focus:border-[#1E3A8A]" />
+          <button onclick="sendTextToRemote(true)" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-xl whitespace-nowrap">
+            วางลงเครื่องปลายทางทันที (Ctrl+V)
+          </button>
+          <button onclick="sendTextToRemote(false)" class="bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs px-3 py-2 rounded-xl whitespace-nowrap font-medium">
+            ส่งเข้ากล่องข้อความ
+          </button>
+        </div>
+
+        <!-- ส่งไฟล์ให้เครื่องปลายทาง -->
+        <div class="bg-white border border-slate-200 rounded-2xl px-4 py-2.5 flex items-center justify-between gap-2 shadow-sm">
+          <span class="text-xs font-bold text-[#1E3A8A] whitespace-nowrap">📁 ส่งไฟล์:</span>
+          <input id="adminFileInput" type="file" class="text-xs text-slate-600 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1E3A8A] hover:file:bg-blue-100 w-full" />
+          <button id="sendFileBtn" onclick="sendFileToHost()" class="bg-[#1E3A8A] hover:bg-blue-900 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold px-3 py-2 rounded-xl whitespace-nowrap flex items-center gap-1.5">
+            <span>ส่งไฟล์</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- หน้าจอแสดงผลระยะไกล (Remote Screen + Annotation Canvas) -->
+      <div id="remoteScreenContainer" tabindex="0" class="relative bg-slate-900 border-2 border-slate-300 rounded-2xl overflow-hidden flex items-center justify-center min-h-[68vh] focus:outline-none focus:border-[#1E3A8A] shadow-inner">
+        <span id="keyboardFocusBadge" class="hidden absolute top-3 left-3 z-20 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#1E3A8A]/90 text-amber-300 border border-amber-400/50 pointer-events-none">
+          ⌨️ กำลังส่งแป้นพิมพ์ไปยังเครื่องปลายทาง
+        </span>
+        <div class="relative inline-block max-w-full">
+          <video id="remoteVideo" autoplay muted playsinline class="max-w-full max-h-[78vh] select-none cursor-crosshair-custom block touch-none"></video>
+          <canvas id="adminAnnotateCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+        </div>
+        <div id="remotePlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 px-4 text-center">
+          <p class="text-base font-semibold text-slate-300">กรอกรหัส 6 หลักด้านบนเพื่อดูหน้าจอและควบคุมเมาส์</p>
+          <p class="text-xs text-slate-400 mt-1">คลิกในกรอบภาพเพื่อเริ่มบังคับเมาส์และกดแป้นพิมพ์</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ================= MODAL ขออนุญาตเข้าควบคุมเครื่อง ================= -->
+  <div id="approvalModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+      <div class="w-12 h-12 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center text-2xl font-bold mb-4">
+        🛡️
+      </div>
+      <h3 class="text-lg font-bold text-slate-900">มีผู้ช่วยเหลือขอเชื่อมต่อเครื่องของคุณ</h3>
+      <p class="text-sm text-slate-600 mt-1 mb-6">
+        ผู้ช่วยเหลือต้องการดูหน้าจอและควบคุมเมาส์/คีย์บอร์ดเพื่อแก้ไขปัญหาคอมพิวเตอร์ คุณต้องการอนุญาตหรือไม่?
+      </p>
+      <div class="flex items-center justify-end gap-3">
+        <button onclick="respondApproval(false)" class="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-100 text-sm font-semibold">
+          ปฏิเสธ
+        </button>
+        <button onclick="respondApproval(true)" class="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold shadow">
+          อนุญาตให้เชื่อมต่อ
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MODAL ตั้งค่า ICE / TURN SERVER ================= -->
+  <div id="iceSettingsModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+      <h3 class="text-lg font-bold text-[#1E3A8A] mb-1">ตั้งค่า ICE / TURN Server (ตัวเลือกเสริม)</h3>
+      <p class="text-xs text-slate-500 mb-4">
+        ใช้สำหรับเครือข่ายที่มี Firewall เข้มงวดหรือ Symmetric NAT หากใช้งานทั่วไปไม่จำเป็นต้องกรอก
+      </p>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 mb-1">TURN Server URL (เช่น turn:relay.example.com:3478)</label>
+          <input id="turnUrlInput" type="text" placeholder="turn:..." class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#1E3A8A]" />
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Username</label>
+            <input id="turnUserInput" type="text" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#1E3A8A]" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Credential</label>
+            <input id="turnPassInput" type="password" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[#1E3A8A]" />
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center justify-between mt-6">
+        <button onclick="clearIceSettings()" class="text-xs text-rose-600 hover:underline font-medium">ล้างค่า TURN</button>
+        <div class="flex items-center gap-2">
+          <button onclick="closeIceModal()" class="px-4 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold">
+            ยกเลิก
+          </button>
+          <button onclick="saveIceSettings()" class="px-4 py-2 rounded-xl bg-[#1E3A8A] hover:bg-blue-900 text-white text-xs font-semibold">
+            บันทึกการตั้งค่า
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- เสียงสำหรับคุยไมค์ -->
+  <audio id="remoteAudio" autoplay></audio>
+
+  <!-- ================= JAVASCRIPT LOGIC ================= -->
+  <script>
+    const PEER_PREFIX = "anysupport-th-v2-";
+    const AGENT_WS_URL = "ws://127.0.0.1:8765";
+    const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+    const FILE_CHUNK_SIZE = 48 * 1024; // 48 KB raw bytes per chunk
+    const TURN_STORAGE_KEY = "anysupport_custom_turn_v1";
+
+    const DEFAULT_STUN_SERVERS = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" }
+    ];
+
+    let currentMode = "host";
+    let peer = null;
+    let dataConn = null;
+    let pendingConn = null;
+    let activeMediaCall = null;
+    let activeVoiceCall = null;
+    let localStream = null;
+    let voiceStream = null;
+    let localAgentWs = null;
+    let agentReconnectTimer = null;
+    let isDrawMode = false;
+    let isDrawing = false;
+    let lastDrawPt = null;
+    let wasRejected = false;
+    let isRemoteAudioEnabled = false;
+    let lastMoveSent = 0;
+
+    const activeMouseButtons = new Set();
+    const incomingFiles = new Map();
+    const hostStrokes = [];
+    const adminStrokes = [];
+
+    const remoteVideo = document.getElementById("remoteVideo");
+    const localPreviewVideo = document.getElementById("localPreviewVideo");
+    const hostCanvas = document.getElementById("hostAnnotateCanvas");
+    const adminCanvas = document.getElementById("adminAnnotateCanvas");
+    const screenContainer = document.getElementById("remoteScreenContainer");
+
+    // -----------------------------------------------------------------------
+    // Helper: Toast Notification, Button Loading State, Safe JSON, ICE Config
+    // -----------------------------------------------------------------------
+    function showToast(message, variant = "info") {
+      const container = document.getElementById("toastContainer");
+      const styles = {
+        info: "bg-[#1E3A8A] text-white border-blue-900",
+        success: "bg-emerald-600 text-white border-emerald-700",
+        warning: "bg-amber-500 text-slate-950 border-amber-600",
+        error: "bg-rose-600 text-white border-rose-700"
+      };
+      const el = document.createElement("div");
+      el.className = `pointer-events-auto px-4 py-2.5 rounded-xl border shadow-lg text-xs sm:text-sm font-medium transition-opacity duration-300 ${styles[variant] || styles.info}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = "0";
+        setTimeout(() => el.remove(), 300);
+      }, 3600);
+    }
+
+    function setButtonLoading(btn, isLoading, labelText) {
+      if (!btn) return;
+      btn.disabled = isLoading;
+      btn.replaceChildren();
+      if (isLoading) {
+        const sp = document.createElement("span");
+        sp.className = "spinner";
+        btn.appendChild(sp);
+      }
+      const span = document.createElement("span");
+      span.textContent = labelText;
+      btn.appendChild(span);
+    }
+
+    function safeParseMessage(rawMsg) {
+      if (rawMsg && typeof rawMsg === "object") return rawMsg;
+      if (typeof rawMsg !== "string") return null;
+      try {
+        const parsed = JSON.parse(rawMsg);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function getRtcConfig() {
+      const iceServers = [...DEFAULT_STUN_SERVERS];
+      try {
+        const raw = localStorage.getItem(TURN_STORAGE_KEY);
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (cfg && cfg.urls) {
+            iceServers.push({
+              urls: cfg.urls,
+              ...(cfg.username ? { username: cfg.username } : {}),
+              ...(cfg.credential ? { credential: cfg.credential } : {})
+            });
+          }
+        }
+      } catch {}
+      return { iceServers };
+    }
+
+    function openIceModal() {
+      try {
+        const raw = localStorage.getItem(TURN_STORAGE_KEY);
+        const cfg = raw ? JSON.parse(raw) : {};
+        document.getElementById("turnUrlInput").value = cfg.urls || "";
+        document.getElementById("turnUserInput").value = cfg.username || "";
+        document.getElementById("turnPassInput").value = cfg.credential || "";
+      } catch {}
+      const modal = document.getElementById("iceSettingsModal");
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+    }
+
+    function closeIceModal() {
+      const modal = document.getElementById("iceSettingsModal");
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    }
+
+    function saveIceSettings() {
+      const urls = document.getElementById("turnUrlInput").value.trim();
+      const username = document.getElementById("turnUserInput").value.trim();
+      const credential = document.getElementById("turnPassInput").value;
+      if (!urls) {
+        clearIceSettings();
+        closeIceModal();
+        return;
+      }
+      localStorage.setItem(TURN_STORAGE_KEY, JSON.stringify({ urls, username, credential }));
+      showToast("บันทึกการตั้งค่า TURN Server แล้ว", "success");
+      closeIceModal();
+    }
+
+    function clearIceSettings() {
+      localStorage.removeItem(TURN_STORAGE_KEY);
+      document.getElementById("turnUrlInput").value = "";
+      document.getElementById("turnUserInput").value = "";
+      document.getElementById("turnPassInput").value = "";
+      showToast("ล้างค่า TURN Server แล้ว (ใช้ STUN เริ่มต้น)", "info");
+    }
+
+    // -----------------------------------------------------------------------
+    // 1. สลับแท็บระหว่าง ผู้ขอความช่วยเหลือ / ผู้ช่วยเหลือ
+    // -----------------------------------------------------------------------
+    function switchMode(mode) {
+      if (mode === currentMode) return;
+      if (currentMode === "host" && (localStream || peer)) {
+        stopHostSession(true);
+      } else if (currentMode === "admin" && (peer || dataConn)) {
+        disconnectAdminSession();
+      }
+      currentMode = mode;
+
+      const hostSec = document.getElementById("hostSection");
+      const adminSec = document.getElementById("adminSection");
+      const tabHostBtn = document.getElementById("tabHostBtn");
+      const tabAdminBtn = document.getElementById("tabAdminBtn");
+
+      if (mode === "host") {
+        hostSec.classList.remove("hidden");
+        adminSec.classList.add("hidden");
+        adminSec.classList.remove("flex");
+        tabHostBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#1E3A8A] text-white shadow-sm transition";
+        tabAdminBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-600 hover:text-slate-900 transition";
+        connectLocalAgent();
+      } else {
+        hostSec.classList.add("hidden");
+        adminSec.classList.remove("hidden");
+        adminSec.classList.add("flex");
+        tabAdminBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#1E3A8A] text-white shadow-sm transition";
+        tabHostBtn.className = "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold text-slate-600 hover:text-slate-900 transition";
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. เชื่อมต่อโปรแกรม RemoteAgent.exe ในเครื่อง (127.0.0.1:8765)
+    // -----------------------------------------------------------------------
+    function updateAgentBadge(state, detail = "") {
+      const badge = document.getElementById("agentStatusBadge");
+      if (state === "ready") {
+        badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300";
+        badge.textContent = `● พร้อมควบคุมเมาส์และคีย์บอร์ด${detail}`;
+      } else if (state === "paused") {
+        badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-300";
+        badge.textContent = "⏸ หยุดควบคุมชั่วคราว (จาก System Tray)";
+      } else {
+        badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200";
+        badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
+      }
+    }
+
+    function connectLocalAgent() {
+      if (currentMode !== "host") return;
+      if (
+        localAgentWs &&
+        (localAgentWs.readyState === WebSocket.OPEN || localAgentWs.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+
+      try {
+        const ws = new WebSocket(AGENT_WS_URL);
+        localAgentWs = ws;
+
+        ws.onopen = () => {
+          if (localAgentWs !== ws) return;
+          updateAgentBadge("ready");
+        };
+
+        ws.onmessage = (event) => {
+          if (localAgentWs !== ws) return;
+          const msg = safeParseMessage(event.data);
+          if (!msg) return;
+          if (msg.type === "agent_status") {
+            if (msg.paused) {
+              updateAgentBadge("paused");
+            } else {
+              const roleTag = msg.isAdmin ? " (Admin)" : "";
+              updateAgentBadge("ready", roleTag);
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          if (localAgentWs !== ws) return;
+          updateAgentBadge("offline");
+        };
+
+        ws.onclose = () => {
+          if (localAgentWs !== ws) return;
+          localAgentWs = null;
+          updateAgentBadge("offline");
+        };
+      } catch {
+        updateAgentBadge("offline");
+      }
+    }
+
+    connectLocalAgent();
+    agentReconnectTimer = setInterval(() => {
+      if (currentMode === "host") {
+        connectLocalAgent();
+      }
+    }, 4000);
+
+    // -----------------------------------------------------------------------
+    // 3. ฝั่ง HOST: เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก
+    // -----------------------------------------------------------------------
+    function generatePin() {
+      return Math.floor(100000 + Math.random() * 900000).toString();
+    }
+
+    function registerHostPeer(pin, attempt = 0) {
+      if (!localStream) return;
+      const startBtn = document.getElementById("startHostBtn");
+      document.getElementById("hostStatusText").textContent = "กำลังลงทะเบียนรหัสห้อง...";
+
+      if (peer) {
+        peer.destroy();
+        peer = null;
+      }
+
+      const hostPeer = new Peer(PEER_PREFIX + pin, { config: getRtcConfig() });
+      peer = hostPeer;
+
+      hostPeer.on("open", () => {
+        if (peer !== hostPeer) return;
+        setButtonLoading(startBtn, false, "เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก");
+        startBtn.classList.add("hidden");
+        document.getElementById("stopHostBtn").classList.remove("hidden");
+        document.getElementById("roomPinDisplay").textContent = pin;
+        document.getElementById("hostStatusText").textContent = "รอผู้ช่วยเหลือกรอกรหัสเพื่อเชื่อมต่อ...";
+        document.getElementById("webrtcHostState").textContent = "สถานะ: พร้อมรับการเชื่อมต่อ";
+      });
+
+      hostPeer.on("disconnected", () => {
+        if (peer === hostPeer && !hostPeer.destroyed) {
+          hostPeer.reconnect();
+        }
+      });
+
+      hostPeer.on("connection", (conn) => {
+        if (peer !== hostPeer) return;
+
+        conn.on("open", () => {
+          // Reject simultaneous extra connection cleanly if one is already pending or active
+          if ((dataConn && dataConn.open) || (pendingConn && pendingConn !== conn)) {
+            conn.send(JSON.stringify({ type: "rejected", reason: "busy" }));
+            setTimeout(() => {
+              if (conn.open) conn.close();
+            }, 250);
+            return;
+          }
+
+          const needApproval = document.getElementById("requireApprovalToggle").checked;
+          if (needApproval) {
+            pendingConn = conn;
+            const modal = document.getElementById("approvalModal");
+            modal.classList.remove("hidden");
+            modal.classList.add("flex");
+          } else {
+            acceptIncomingConnection(conn);
+          }
+        });
+
+        conn.on("close", () => {
+          if (pendingConn === conn) {
+            pendingConn = null;
+            hideApprovalModal();
+          }
+        });
+
+        conn.on("error", () => {
+          if (pendingConn === conn) {
+            pendingConn = null;
+            hideApprovalModal();
+          }
+        });
+      });
+
+      // รับสายไมโครโฟนเฉพาะจากผู้ช่วยเหลือที่ได้รับอนุญาตแล้วเท่านั้น
+      hostPeer.on("call", (call) => {
+        if (!dataConn || !dataConn.open || call.peer !== dataConn.peer) {
+          call.close();
+          return;
+        }
+        call.answer();
+        call.on("stream", (audioStream) => {
+          document.getElementById("remoteAudio").srcObject = audioStream;
+        });
+      });
+
+      hostPeer.on("error", (err) => {
+        if (peer !== hostPeer) return;
+        if (err.type === "unavailable-id" && attempt < 5) {
+          registerHostPeer(generatePin(), attempt + 1);
+          return;
+        }
+        showToast("เกิดข้อผิดพลาดการสร้างห้อง: " + err.type, "error");
+        stopHostSession(true);
+      });
+    }
+
+    async function startHostSession() {
+      const startBtn = document.getElementById("startHostBtn");
+      setButtonLoading(startBtn, true, "กำลังขอสิทธิ์แชร์หน้าจอ...");
+
+      try {
+        localStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: "always", frameRate: { ideal: 30, max: 60 } },
+          audio: true
+        });
+
+        localPreviewVideo.srcObject = localStream;
+        document.getElementById("localVideoPlaceholder").classList.add("hidden");
+
+        localStream.getVideoTracks()[0].onended = () => stopHostSession(true);
+
+        setButtonLoading(startBtn, true, "กำลังสร้างรหัสห้อง...");
+        registerHostPeer(generatePin());
+      } catch (err) {
+        setButtonLoading(startBtn, false, "เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก");
+        showToast("ยกเลิกการแชร์หน้าจอ: " + err.message, "warning");
+      }
+    }
+
+    function hideApprovalModal() {
+      const modal = document.getElementById("approvalModal");
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    }
+
+    function respondApproval(approved) {
+      hideApprovalModal();
+      const conn = pendingConn;
+      pendingConn = null;
+      if (!conn) return;
+
+      if (approved) {
+        if (conn.open) {
+          acceptIncomingConnection(conn);
+        }
+      } else {
+        try {
+          if (conn.open) conn.send(JSON.stringify({ type: "rejected" }));
+        } catch {}
+        setTimeout(() => {
+          try {
+            if (conn.open) conn.close();
+          } catch {}
+        }, 300);
+      }
+    }
+
+    function acceptIncomingConnection(conn) {
+      if (dataConn && dataConn !== conn && dataConn.open) {
+        try {
+          dataConn.close();
+        } catch {}
+      }
+      dataConn = conn;
+      document.getElementById("hostStatusText").textContent = "เชื่อมต่อสำเร็จ! ผู้ช่วยเหลือกำลังดูแลเครื่องของคุณ";
+      document.getElementById("webrtcHostState").textContent = "สถานะ: เชื่อมต่อแล้ว";
+      showToast("ผู้ช่วยเหลือเชื่อมต่อเข้ามาแล้ว", "success");
+
+      if (peer && localStream) {
+        if (activeMediaCall) {
+          try {
+            activeMediaCall.close();
+          } catch {}
+        }
+        activeMediaCall = peer.call(conn.peer, localStream);
+      }
+
+      conn.on("data", (rawMsg) => {
+        const parsed = safeParseMessage(rawMsg);
+        if (!parsed) return;
+
+        if (parsed.type === "chat_text") {
+          document.getElementById("hostReceivedText").value = String(parsed.text || "");
+          showToast("ได้รับข้อความใหม่จากผู้ช่วยเหลือ", "info");
+          return;
+        }
+        if (parsed.type === "file_start") {
+          handleIncomingFileStart(parsed);
+          return;
+        }
+        if (parsed.type === "file_chunk") {
+          handleIncomingFileChunk(parsed);
+          return;
+        }
+        if (parsed.type === "file_end") {
+          handleIncomingFileEnd(parsed);
+          return;
+        }
+        if (parsed.type === "file_transfer") {
+          receiveLegacyFileOnHost(parsed);
+          return;
+        }
+        if (parsed.type === "draw_line") {
+          hostStrokes.push({ x1: parsed.x1, y1: parsed.y1, x2: parsed.x2, y2: parsed.y2 });
+          drawStrokeOnCanvas(hostCanvas, parsed.x1, parsed.y1, parsed.x2, parsed.y2);
+          return;
+        }
+        if (parsed.type === "clear_draw") {
+          hostStrokes.length = 0;
+          clearCanvasEl(hostCanvas);
+          return;
+        }
+
+        // ส่งคำสั่งเมาส์ คีย์บอร์ด หรือคำสั่งด่วน ไปให้ RemoteAgent.exe
+        if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+          localAgentWs.send(JSON.stringify(parsed));
+        }
+      });
+
+      const handleDisconnect = () => {
+        if (dataConn !== conn) return;
+        dataConn = null;
+        if (activeMediaCall) {
+          try {
+            activeMediaCall.close();
+          } catch {}
+          activeMediaCall = null;
+        }
+        document.getElementById("remoteAudio").srcObject = null;
+        if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+          localAgentWs.send(JSON.stringify({ type: "release_all" }));
+        }
+        if (localStream) {
+          document.getElementById("hostStatusText").textContent = "รอผู้ช่วยเหลือกรอกรหัสเพื่อเชื่อมต่อ...";
+          document.getElementById("webrtcHostState").textContent = "สถานะ: ผู้ช่วยเหลือตัดการเชื่อมต่อแล้ว";
+          showToast("ผู้ช่วยเหลือตัดการเชื่อมต่อแล้ว", "warning");
+        }
+      };
+
+      conn.on("close", handleDisconnect);
+      conn.on("error", handleDisconnect);
+    }
+
+    function stopHostSession(silent = false) {
+      hideApprovalModal();
+      pendingConn = null;
+      if (dataConn) {
+        try {
+          dataConn.close();
+        } catch {}
+        dataConn = null;
+      }
+      if (activeMediaCall) {
+        try {
+          activeMediaCall.close();
+        } catch {}
+        activeMediaCall = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach((t) => t.stop());
+        localStream = null;
+      }
+      if (peer) {
+        peer.destroy();
+        peer = null;
+      }
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({ type: "release_all" }));
+      }
+
+      localPreviewVideo.srcObject = null;
+      document.getElementById("remoteAudio").srcObject = null;
+      document.getElementById("localVideoPlaceholder").classList.remove("hidden");
+      document.getElementById("stopHostBtn").classList.add("hidden");
+      const startBtn = document.getElementById("startHostBtn");
+      startBtn.classList.remove("hidden");
+      setButtonLoading(startBtn, false, "เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก");
+      document.getElementById("roomPinDisplay").textContent = "------";
+      document.getElementById("hostStatusText").textContent = "ยังไม่ได้เริ่มสร้างห้อง";
+      document.getElementById("webrtcHostState").textContent = "สถานะ: รอการเชื่อมต่อ";
+      hostStrokes.length = 0;
+      clearCanvasEl(hostCanvas);
+
+      if (!silent) {
+        showToast("หยุดแชร์หน้าจอและตัดการเชื่อมต่อเรียบร้อย", "info");
+      }
+    }
+
+    async function copyReceivedText() {
+      const input = document.getElementById("hostReceivedText");
+      const btn = document.getElementById("copyTextBtn");
+      const text = input.value;
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        input.select();
+        document.execCommand("copy");
+      }
+      btn.textContent = "คัดลอกแล้ว ✓";
+      setTimeout(() => {
+        btn.textContent = "คัดลอก";
+      }, 1500);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. ฝั่ง ADMIN: เชื่อมต่อด้วยรหัส 6 หลัก
+    // -----------------------------------------------------------------------
+    function joinRemoteRoom() {
+      const pinInput = document.getElementById("joinPinInput");
+      const pin = pinInput.value.trim();
+      if (!/^\d{6}$/.test(pin)) {
+        showToast("กรุณากรอกรหัสตัวเลข 6 หลักให้ครบถ้วน", "warning");
+        pinInput.focus();
+        return;
+      }
+
+      const joinBtn = document.getElementById("joinRoomBtn");
+      const discBtn = document.getElementById("disconnectAdminBtn");
+      const statusEl = document.getElementById("adminConnStatus");
+
+      disconnectAdminSession(true);
+      wasRejected = false;
+      setButtonLoading(joinBtn, true, "กำลังเชื่อมต่อ...");
+      statusEl.textContent = "กำลังขออนุญาตเข้าเครื่อง...";
+      statusEl.className = "text-xs text-amber-600 ml-1 font-semibold";
+
+      const adminPeer = new Peer({ config: getRtcConfig() });
+      peer = adminPeer;
+
+      adminPeer.on("open", () => {
+        if (peer !== adminPeer) return;
+        const conn = adminPeer.connect(PEER_PREFIX + pin, { reliable: true });
+        dataConn = conn;
+
+        conn.on("open", () => {
+          if (dataConn !== conn) return;
+          setButtonLoading(joinBtn, false, "เชื่อมต่อ");
+          joinBtn.classList.add("hidden");
+          discBtn.classList.remove("hidden");
+          statusEl.textContent = "รอผู้ขอความช่วยเหลือคลิกอนุญาต...";
+        });
+
+        conn.on("data", (rawMsg) => {
+          const parsed = safeParseMessage(rawMsg);
+          if (!parsed) return;
+          if (parsed.type === "rejected") {
+            wasRejected = true;
+            const msg =
+              parsed.reason === "busy"
+                ? "เครื่องปลายทางกำลังเชื่อมต่อกับผู้ช่วยเหลือท่านอื่นอยู่"
+                : "ผู้ขอความช่วยเหลือปฏิเสธการเชื่อมต่อ";
+            showToast(msg, "error");
+            statusEl.textContent = msg;
+            statusEl.className = "text-xs text-rose-600 ml-1 font-semibold";
+            disconnectAdminSession(true, true);
+          }
+        });
+
+        conn.on("close", () => {
+          if (dataConn !== conn) return;
+          resetAdminMediaUi();
+          if (!wasRejected) {
+            statusEl.textContent = "การเชื่อมต่อถูกตัด";
+            statusEl.className = "text-xs text-rose-600 ml-1 font-semibold";
+          }
+        });
+
+        conn.on("error", () => {
+          if (dataConn !== conn) return;
+          resetAdminMediaUi();
+          statusEl.textContent = "เกิดข้อผิดพลาดในการเชื่อมต่อข้อมูล";
+          statusEl.className = "text-xs text-rose-600 ml-1 font-semibold";
+        });
+      });
+
+      adminPeer.on("disconnected", () => {
+        if (peer === adminPeer && !adminPeer.destroyed) {
+          adminPeer.reconnect();
+        }
+      });
+
+      adminPeer.on("call", (call) => {
+        if (peer !== adminPeer) return;
+        if (activeMediaCall) {
+          try {
+            activeMediaCall.close();
+          } catch {}
+        }
+        activeMediaCall = call;
+        call.answer();
+        call.on("stream", (remoteStream) => {
+          remoteVideo.srcObject = remoteStream;
+          remoteVideo.muted = !isRemoteAudioEnabled;
+          remoteVideo.play().catch(() => {
+            remoteVideo.muted = true;
+            isRemoteAudioEnabled = false;
+            updateRemoteAudioButton();
+            remoteVideo.play().catch(() => {});
+          });
+          document.getElementById("remotePlaceholder").classList.add("hidden");
+          statusEl.textContent = "● เชื่อมต่อและพร้อมควบคุมแล้ว";
+          statusEl.className = "text-xs text-emerald-600 ml-1 font-bold";
+          showToast("เชื่อมต่อหน้าจอปลายทางสำเร็จ", "success");
+        });
+      });
+
+      adminPeer.on("error", (err) => {
+        if (peer !== adminPeer) return;
+        showToast(`ไม่พบรหัสห้องนี้ หรืออีกฝั่งยังไม่ได้กดแชร์หน้าจอ (${err.type})`, "error");
+        statusEl.textContent = "เชื่อมต่อไม่สำเร็จ";
+        statusEl.className = "text-xs text-rose-600 ml-1 font-semibold";
+        disconnectAdminSession(true, true);
+      });
+    }
+
+    function resetAdminMediaUi() {
+      activeMouseButtons.clear();
+      if (activeMediaCall) {
+        try {
+          activeMediaCall.close();
+        } catch {}
+        activeMediaCall = null;
+      }
+      if (activeVoiceCall) {
+        try {
+          activeVoiceCall.close();
+        } catch {}
+        activeVoiceCall = null;
+      }
+      if (voiceStream) {
+        voiceStream.getTracks().forEach((t) => t.stop());
+        voiceStream = null;
+        updateMicButton(false);
+      }
+      remoteVideo.srcObject = null;
+      document.getElementById("remotePlaceholder").classList.remove("hidden");
+      document.getElementById("disconnectAdminBtn").classList.add("hidden");
+      const joinBtn = document.getElementById("joinRoomBtn");
+      joinBtn.classList.remove("hidden");
+      setButtonLoading(joinBtn, false, "เชื่อมต่อ");
+      adminStrokes.length = 0;
+      clearCanvasEl(adminCanvas);
+    }
+
+    function disconnectAdminSession(silent = false, keepStatus = false) {
+      if (dataConn) {
+        try {
+          dataConn.close();
+        } catch {}
+        dataConn = null;
+      }
+      if (peer) {
+        peer.destroy();
+        peer = null;
+      }
+      resetAdminMediaUi();
+      if (!keepStatus) {
+        const statusEl = document.getElementById("adminConnStatus");
+        statusEl.textContent = "พร้อมเชื่อมต่อ";
+        statusEl.className = "text-xs text-slate-500 ml-1 font-medium";
+      }
+      if (!silent) {
+        showToast("ตัดการเชื่อมต่อจากเครื่องปลายทางแล้ว", "info");
+      }
+    }
+
+    document.getElementById("joinPinInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        joinRemoteRoom();
+      }
+    });
+
+    document.getElementById("adminTextInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        sendTextToRemote(true);
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // 5. ระบบควบคุมเมาส์ / สัมผัส / คีย์บอร์ด / วาดหน้าจอ
+    // -----------------------------------------------------------------------
+    function sendControlEvent(payload) {
+      if (dataConn && dataConn.open) {
+        dataConn.send(JSON.stringify(payload));
+      }
+    }
+
+    function getNormalizedCoordsFromPoint(clientX, clientY) {
+      const rect = remoteVideo.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      return { x, y };
+    }
+
+    function releaseStuckMouseButtons(coords) {
+      if (activeMouseButtons.size === 0) return;
+      const pt = coords || { x: 0.5, y: 0.5 };
+      for (const btn of Array.from(activeMouseButtons)) {
+        sendControlEvent({ type: "mouseup", x: pt.x, y: pt.y, button: btn });
+      }
+      activeMouseButtons.clear();
+    }
+
+    remoteVideo.addEventListener("mousemove", (e) => {
+      const pt = getNormalizedCoordsFromPoint(e.clientX, e.clientY);
+      if (!pt) return;
+
+      if (isDrawMode) {
+        if (!isDrawing || !lastDrawPt) return;
+        adminStrokes.push({ x1: lastDrawPt.x, y1: lastDrawPt.y, x2: pt.x, y2: pt.y });
+        drawStrokeOnCanvas(adminCanvas, lastDrawPt.x, lastDrawPt.y, pt.x, pt.y);
+        sendControlEvent({ type: "draw_line", x1: lastDrawPt.x, y1: lastDrawPt.y, x2: pt.x, y2: pt.y });
+        lastDrawPt = pt;
+        return;
+      }
+
+      if (!document.getElementById("enableControlToggle").checked) return;
+      const now = Date.now();
+      if (now - lastMoveSent < 25) return;
+      lastMoveSent = now;
+      sendControlEvent({ type: "mousemove", x: pt.x, y: pt.y });
+    });
+
+    remoteVideo.addEventListener("mousedown", (e) => {
+      screenContainer.focus();
+      const pt = getNormalizedCoordsFromPoint(e.clientX, e.clientY);
+      if (!pt) return;
+
+      if (isDrawMode) {
+        isDrawing = true;
+        lastDrawPt = pt;
+        return;
+      }
+
+      if (!document.getElementById("enableControlToggle").checked) return;
+      const btnMap = { 0: "left", 1: "middle", 2: "right" };
+      const button = btnMap[e.button] || "left";
+      activeMouseButtons.add(button);
+      sendControlEvent({ type: "mousedown", x: pt.x, y: pt.y, button });
+    });
+
+    remoteVideo.addEventListener("mouseup", (e) => {
+      if (isDrawMode || !document.getElementById("enableControlToggle").checked) return;
+      const pt = getNormalizedCoordsFromPoint(e.clientX, e.clientY);
+      if (!pt) return;
+      const btnMap = { 0: "left", 1: "middle", 2: "right" };
+      const button = btnMap[e.button] || "left";
+      activeMouseButtons.delete(button);
+      sendControlEvent({ type: "mouseup", x: pt.x, y: pt.y, button });
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (isDrawMode) {
+        isDrawing = false;
+        lastDrawPt = null;
+      }
+      if (activeMouseButtons.size > 0 && e.target !== remoteVideo) {
+        const pt = getNormalizedCoordsFromPoint(e.clientX, e.clientY);
+        releaseStuckMouseButtons(pt);
+      }
+    });
+
+    window.addEventListener("blur", () => {
+      isDrawing = false;
+      lastDrawPt = null;
+      releaseStuckMouseButtons();
+      sendControlEvent({ type: "release_all" });
+    });
+
+    // รองรับหน้าจอสัมผัสบนมือถือ/แท็บเล็ต
+    remoteVideo.addEventListener("touchstart", (e) => {
+      if (!e.touches.length) return;
+      const touch = e.touches[0];
+      const pt = getNormalizedCoordsFromPoint(touch.clientX, touch.clientY);
+      if (!pt) return;
+      e.preventDefault();
+      if (isDrawMode) {
+        isDrawing = true;
+        lastDrawPt = pt;
+      } else if (document.getElementById("enableControlToggle").checked) {
+        activeMouseButtons.add("left");
+        sendControlEvent({ type: "mousedown", x: pt.x, y: pt.y, button: "left" });
+      }
+    }, { passive: false });
+
+    remoteVideo.addEventListener("touchmove", (e) => {
+      if (!e.touches.length) return;
+      const touch = e.touches[0];
+      const pt = getNormalizedCoordsFromPoint(touch.clientX, touch.clientY);
+      if (!pt) return;
+      e.preventDefault();
+      if (isDrawMode && isDrawing && lastDrawPt) {
+        adminStrokes.push({ x1: lastDrawPt.x, y1: lastDrawPt.y, x2: pt.x, y2: pt.y });
+        drawStrokeOnCanvas(adminCanvas, lastDrawPt.x, lastDrawPt.y, pt.x, pt.y);
+        sendControlEvent({ type: "draw_line", x1: lastDrawPt.x, y1: lastDrawPt.y, x2: pt.x, y2: pt.y });
+        lastDrawPt = pt;
+      } else if (!isDrawMode && document.getElementById("enableControlToggle").checked) {
+        const now = Date.now();
+        if (now - lastMoveSent < 30) return;
+        lastMoveSent = now;
+        sendControlEvent({ type: "mousemove", x: pt.x, y: pt.y });
+      }
+    }, { passive: false });
+
+    remoteVideo.addEventListener("touchend", () => {
+      if (isDrawMode) {
+        isDrawing = false;
+        lastDrawPt = null;
+      } else {
+        releaseStuckMouseButtons();
+      }
+    });
+
+    remoteVideo.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    remoteVideo.addEventListener("wheel", (e) => {
+      if (isDrawMode || !document.getElementById("enableControlToggle").checked) return;
+      e.preventDefault();
+      const rawStep = Math.round((-e.deltaY / 100) * 120);
+      const dy = Math.max(-600, Math.min(600, rawStep || (e.deltaY > 0 ? -120 : 120)));
+      sendControlEvent({ type: "scroll", dy });
+    }, { passive: false });
+
+    screenContainer.addEventListener("focus", () => {
+      document.getElementById("keyboardFocusBadge").classList.remove("hidden");
+    });
+
+    screenContainer.addEventListener("blur", () => {
+      document.getElementById("keyboardFocusBadge").classList.add("hidden");
+      sendControlEvent({ type: "release_all" });
+    });
+
+    screenContainer.addEventListener("keydown", (e) => {
+      if (!document.getElementById("enableControlToggle").checked) return;
+      if (e.isComposing || e.key === "Process") return;
+      e.preventDefault();
+      const isModifier = ["Control", "Alt", "Shift", "Meta"].includes(e.key);
+      if (e.repeat && isModifier) return;
+      sendControlEvent({
+        type: "keydown",
+        key: e.key,
+        code: e.code,
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        meta: e.metaKey
+      });
+    });
+
+    screenContainer.addEventListener("keyup", (e) => {
+      if (!document.getElementById("enableControlToggle").checked) return;
+      if (e.isComposing || e.key === "Process") return;
+      e.preventDefault();
+      sendControlEvent({
+        type: "keyup",
+        key: e.key,
+        code: e.code,
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        meta: e.metaKey
+      });
+    });
+
+    document.getElementById("enableControlToggle").addEventListener("change", (e) => {
+      if (!e.target.checked) {
+        releaseStuckMouseButtons();
+        sendControlEvent({ type: "release_all" });
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // 6. ฟังก์ชันวาดเส้นชี้เป้าบนหน้าจอ (HiDPI & Resize-Safe)
+    // -----------------------------------------------------------------------
+    function toggleDrawMode() {
+      isDrawMode = !isDrawMode;
+      isDrawing = false;
+      lastDrawPt = null;
+      releaseStuckMouseButtons();
+
+      const btn = document.getElementById("drawModeBtn");
+      if (isDrawMode) {
+        btn.textContent = "✏️ ปากกาวาดจอ: เปิดอยู่";
+        btn.className = "bg-rose-600 text-white border border-rose-700 text-xs px-3 py-2 rounded-xl font-bold transition";
+        remoteVideo.classList.replace("cursor-crosshair-custom", "cursor-pen-custom");
+      } else {
+        btn.textContent = "✏️ ปากกาวาดจอ: ปิด";
+        btn.className = "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition";
+        remoteVideo.classList.replace("cursor-pen-custom", "cursor-crosshair-custom");
+      }
+    }
+
+    function syncCanvasSize(canvas) {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (!w || !h) return false;
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.round(w * dpr);
+      const targetH = Math.round(h * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+        return true;
+      }
+      return false;
+    }
+
+    function drawStrokeOnCanvas(canvas, x1, y1, x2, y2) {
+      syncCanvasSize(canvas);
+      if (!canvas.width || !canvas.height) return;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 3 * dpr;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(x1 * canvas.width, y1 * canvas.height);
+      ctx.lineTo(x2 * canvas.width, y2 * canvas.height);
+      ctx.stroke();
+    }
+
+    function redrawCanvas(canvas, strokes) {
+      syncCanvasSize(canvas);
+      if (!canvas.width || !canvas.height) return;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const dpr = window.devicePixelRatio || 1;
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 3 * dpr;
+      ctx.lineCap = "round";
+      for (const s of strokes) {
+        ctx.beginPath();
+        ctx.moveTo(s.x1 * canvas.width, s.y1 * canvas.height);
+        ctx.lineTo(s.x2 * canvas.width, s.y2 * canvas.height);
+        ctx.stroke();
+      }
+    }
+
+    function clearCanvasEl(canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function clearAnnotations() {
+      adminStrokes.length = 0;
+      clearCanvasEl(adminCanvas);
+      sendControlEvent({ type: "clear_draw" });
+    }
+
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => redrawCanvas(hostCanvas, hostStrokes)).observe(localPreviewVideo);
+      new ResizeObserver(() => redrawCanvas(adminCanvas, adminStrokes)).observe(remoteVideo);
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. คำสั่งด่วนช่างซ่อมคอม, วางภาษาไทย, ส่งไฟล์ (Chunked + Safe DOM), ไมค์, แคปจอ
+    // -----------------------------------------------------------------------
+    function sendShortcut(keys) {
+      if (!dataConn || !dataConn.open) {
+        showToast("ยังไม่ได้เชื่อมต่อกับเครื่องปลายทาง", "warning");
+        return;
+      }
+      sendControlEvent({ type: "hotkey", keys });
+    }
+
+    function sendSysCommand(cmdName) {
+      if (!dataConn || !dataConn.open) {
+        showToast("ยังไม่ได้เชื่อมต่อกับเครื่องปลายทาง", "warning");
+        return;
+      }
+      sendControlEvent({ type: "sys_cmd", cmd: cmdName });
+    }
+
+    function sendTextToRemote(autoPaste) {
+      if (!dataConn || !dataConn.open) {
+        showToast("ยังไม่ได้เชื่อมต่อกับเครื่องปลายทาง", "warning");
+        return;
+      }
+      const input = document.getElementById("adminTextInput");
+      const text = input.value;
+      if (!text) return;
+      sendControlEvent({ type: autoPaste ? "paste_text" : "chat_text", text });
+      input.value = "";
+      showToast(autoPaste ? "ส่งข้อความวางลงเครื่องปลายทางแล้ว" : "ส่งข้อความเข้ากล่องข้อความแล้ว", "success");
+    }
+
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    function base64ToUint8Array(b64) {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    function sendFileToHost() {
+      if (!dataConn || !dataConn.open) {
+        showToast("กรุณาเชื่อมต่อกับเครื่องปลายทางก่อนส่งไฟล์", "warning");
+        return;
+      }
+      const fileInput = document.getElementById("adminFileInput");
+      const sendBtn = document.getElementById("sendFileBtn");
+      const file = fileInput.files[0];
+      if (!file) {
+        showToast("กรุณาเลือกไฟล์ที่ต้องการส่งก่อนครับ", "warning");
+        return;
+      }
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        showToast("ไฟล์มีขนาดใหญ่เกิน 25 MB กรุณาบีบอัดหรือแบ่งส่ง", "error");
+        return;
+      }
+
+      setButtonLoading(sendBtn, true, "กำลังส่ง...");
+      const reader = new FileReader();
+
+      reader.onerror = () => {
+        setButtonLoading(sendBtn, false, "ส่งไฟล์");
+        showToast("ไม่สามารถอ่านไฟล์ที่เลือกได้", "error");
+      };
+
+      reader.onload = async () => {
+        try {
+          const buffer = reader.result;
+          const totalChunks = Math.max(1, Math.ceil(buffer.byteLength / FILE_CHUNK_SIZE));
+          const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+          sendControlEvent({
+            type: "file_start",
+            fileId,
+            fileName: file.name,
+            mimeType: file.type || "application/octet-stream",
+            totalSize: file.size,
+            totalChunks
+          });
+
+          for (let i = 0; i < totalChunks; i++) {
+            if (!dataConn || !dataConn.open) {
+              throw new Error("การเชื่อมต่อถูกตัดระหว่างส่งไฟล์");
+            }
+            const slice = buffer.slice(i * FILE_CHUNK_SIZE, (i + 1) * FILE_CHUNK_SIZE);
+            sendControlEvent({
+              type: "file_chunk",
+              fileId,
+              index: i,
+              data: arrayBufferToBase64(slice)
+            });
+            if (i % 8 === 7) {
+              await new Promise((r) => setTimeout(r, 10));
+            }
+          }
+
+          sendControlEvent({ type: "file_end", fileId });
+          showToast(`ส่งไฟล์ "${file.name}" เรียบร้อยแล้ว`, "success");
+          fileInput.value = "";
+        } catch (err) {
+          showToast("ส่งไฟล์ไม่สำเร็จ: " + err.message, "error");
+        } finally {
+          setButtonLoading(sendBtn, false, "ส่งไฟล์");
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function appendSafeReceivedFile(fileName, downloadHref) {
+      const listEl = document.getElementById("hostReceivedFilesList");
+      const emptyMsg = document.getElementById("hostFilesEmptyMsg");
+      if (emptyMsg) emptyMsg.remove();
+
+      const safeName = String(fileName || "downloaded-file").replace(/[\\/:*?"<>|]/g, "_");
+      const item = document.createElement("div");
+      item.className = "flex items-center justify-between bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 gap-2";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "truncate font-medium text-slate-700";
+      nameSpan.textContent = safeName;
+
+      const link = document.createElement("a");
+      link.href = downloadHref;
+      link.download = safeName;
+      link.className = "text-[#1E3A8A] font-bold hover:underline shrink-0";
+      link.textContent = "ดาวน์โหลด";
+
+      item.appendChild(nameSpan);
+      item.appendChild(link);
+      listEl.appendChild(item);
+      showToast(`ได้รับไฟล์ "${safeName}" แล้ว`, "success");
+    }
+
+    function handleIncomingFileStart(msg) {
+      if (!msg.fileId || Number(msg.totalSize) > MAX_FILE_SIZE_BYTES) return;
+      incomingFiles.set(msg.fileId, {
+        fileName: msg.fileName,
+        mimeType: msg.mimeType || "application/octet-stream",
+        totalChunks: Number(msg.totalChunks) || 1,
+        chunks: []
+      });
+    }
+
+    function handleIncomingFileChunk(msg) {
+      const entry = incomingFiles.get(msg.fileId);
+      if (!entry || typeof msg.data !== "string") return;
+      entry.chunks[Number(msg.index) || 0] = base64ToUint8Array(msg.data);
+    }
+
+    function handleIncomingFileEnd(msg) {
+      const entry = incomingFiles.get(msg.fileId);
+      if (!entry) return;
+      incomingFiles.delete(msg.fileId);
+      const validChunks = entry.chunks.filter(Boolean);
+      const blob = new Blob(validChunks, { type: entry.mimeType });
+      const blobUrl = URL.createObjectURL(blob);
+      appendSafeReceivedFile(entry.fileName, blobUrl);
+    }
+
+    function receiveLegacyFileOnHost(fileObj) {
+      if (typeof fileObj.fileData !== "string" || !fileObj.fileData.startsWith("data:")) return;
+      appendSafeReceivedFile(fileObj.fileName, fileObj.fileData);
+    }
+
+    function updateMicButton(isOn) {
+      const btn = document.getElementById("micToggleBtn");
+      btn.replaceChildren();
+      const span = document.createElement("span");
+      if (isOn) {
+        span.textContent = "🎤 ไมค์: เปิดอยู่";
+        btn.className = "bg-emerald-600 text-white border border-emerald-700 text-xs px-3 py-2 rounded-xl font-bold transition flex items-center gap-1.5";
+      } else {
+        span.textContent = "🎤 เปิดไมค์คุย";
+        btn.className = "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition flex items-center gap-1.5";
+      }
+      btn.appendChild(span);
+    }
+
+    async function toggleVoiceCall() {
+      const btn = document.getElementById("micToggleBtn");
+      if (!voiceStream) {
+        if (!peer || !dataConn || !dataConn.open) {
+          showToast("กรุณาเชื่อมต่อกับเครื่องปลายทางก่อนเปิดไมค์", "warning");
+          return;
+        }
+        setButtonLoading(btn, true, "กำลังเปิดไมค์...");
+        try {
+          voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          activeVoiceCall = peer.call(dataConn.peer, voiceStream);
+          btn.disabled = false;
+          updateMicButton(true);
+          showToast("เปิดไมโครโฟนสนทนาแล้ว", "success");
+        } catch (err) {
+          btn.disabled = false;
+          updateMicButton(false);
+          showToast("ไม่สามารถเปิดไมโครโฟนได้: " + err.message, "error");
+        }
+      } else {
+        if (activeVoiceCall) {
+          try {
+            activeVoiceCall.close();
+          } catch {}
+          activeVoiceCall = null;
+        }
+        voiceStream.getTracks().forEach((t) => t.stop());
+        voiceStream = null;
+        updateMicButton(false);
+        showToast("ปิดไมโครโฟนแล้ว", "info");
+      }
+    }
+
+    function updateRemoteAudioButton() {
+      const btn = document.getElementById("remoteAudioBtn");
+      if (isRemoteAudioEnabled) {
+        btn.textContent = "🔊 เสียงปลายทาง: เปิด";
+        btn.className = "bg-blue-50 text-[#1E3A8A] border border-blue-300 text-xs px-3 py-2 rounded-xl font-semibold transition";
+      } else {
+        btn.textContent = "🔇 เสียงปลายทาง: ปิด";
+        btn.className = "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-medium transition";
+      }
+    }
+
+    function toggleRemoteAudio() {
+      isRemoteAudioEnabled = !isRemoteAudioEnabled;
+      remoteVideo.muted = !isRemoteAudioEnabled;
+      updateRemoteAudioButton();
+    }
+
+    function takeSnapshot() {
+      if (!remoteVideo.videoWidth) {
+        showToast("ยังไม่มีภาพหน้าจอให้แคป", "warning");
+        return;
+      }
+      const snapCanvas = document.createElement("canvas");
+      snapCanvas.width = remoteVideo.videoWidth;
+      snapCanvas.height = remoteVideo.videoHeight;
+      const ctx = snapCanvas.getContext("2d");
+      ctx.drawImage(remoteVideo, 0, 0, snapCanvas.width, snapCanvas.height);
+
+      // วาดเส้นชี้เป้าลงบนภาพที่แคปด้วย
+      if (adminStrokes.length > 0) {
+        ctx.strokeStyle = "#EF4444";
+        ctx.lineWidth = Math.max(3, Math.round(snapCanvas.width / 320));
+        ctx.lineCap = "round";
+        for (const s of adminStrokes) {
+          ctx.beginPath();
+          ctx.moveTo(s.x1 * snapCanvas.width, s.y1 * snapCanvas.height);
+          ctx.lineTo(s.x2 * snapCanvas.width, s.y2 * snapCanvas.height);
+          ctx.stroke();
+        }
+      }
+
+      const link = document.createElement("a");
+      link.download = `remote-snapshot-${Date.now()}.png`;
+      link.href = snapCanvas.toDataURL("image/png");
+      link.click();
+      showToast("บันทึกภาพหน้าจอเรียบร้อยแล้ว", "success");
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        screenContainer.requestFullscreen().catch((err) => {
+          showToast("ไม่สามารถขยายเต็มจอได้: " + err.message, "warning");
+        });
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  </script>
+</body>
+</html>

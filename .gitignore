@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+build/
+dist/
+node_modules/
+.npm/
+.vercel/
+*.local
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+agent.ico

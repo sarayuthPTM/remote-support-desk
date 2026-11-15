@@ -1,0 +1,4 @@
+websockets>=14.0
+pystray>=0.19.5
+pillow>=11.0.0
+pyinstaller>=6.10.0

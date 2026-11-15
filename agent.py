@@ -1,0 +1,884 @@
+"""
+AnySupport Web - Windows Remote Control Agent (RemoteAgent.exe)
+System Tray + UAC Administrator + Loopback WebSocket (127.0.0.1:8765) + Win32 SendInput
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ctypes
+from ctypes import wintypes
+import json
+import os
+import re
+import sys
+import threading
+import time
+from typing import Any
+
+from PIL import Image, ImageDraw
+import pystray
+from pystray import MenuItem as Item
+from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
+
+HOST = "127.0.0.1"
+PORT = 8765
+AGENT_VERSION = "2.0.0"
+MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
+
+# Allowed browser origins by default (localhost, 127.0.0.1, Vercel, GitHub Pages, local file)
+TRUSTED_ORIGIN_PATTERNS = (
+    re.compile(r"^https?://localhost(:\d+)?$", re.IGNORECASE),
+    re.compile(r"^https?://127\.0\.0\.1(:\d+)?$", re.IGNORECASE),
+    re.compile(r"^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$", re.IGNORECASE),
+    re.compile(r"^https://[a-z0-9-]+\.github\.io$", re.IGNORECASE),
+)
+
+# Win32 Constants
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
+
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_ABSOLUTE = 0x8000
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+KEYEVENTF_SCANCODE = 0x0008
+
+MAPVK_VK_TO_VSC = 0
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+
+MB_YESNO = 0x00000004
+MB_OK = 0x00000000
+MB_ICONQUESTION = 0x00000020
+MB_ICONINFORMATION = 0x00000040
+MB_TOPMOST = 0x00040000
+IDYES = 6
+
+ERROR_ALREADY_EXISTS = 183
+
+# Win32 API bindings
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+
+ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("union",)
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("union", _INPUT_UNION),
+    ]
+
+
+user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+user32.SendInput.restype = wintypes.UINT
+user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+user32.MapVirtualKeyW.restype = wintypes.UINT
+user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+user32.GetSystemMetrics.restype = ctypes.c_int
+user32.OpenClipboard.argtypes = (wintypes.HWND,)
+user32.OpenClipboard.restype = wintypes.BOOL
+user32.EmptyClipboard.argtypes = ()
+user32.EmptyClipboard.restype = wintypes.BOOL
+user32.SetClipboardData.argtypes = (wintypes.UINT, wintypes.HANDLE)
+user32.SetClipboardData.restype = wintypes.HANDLE
+user32.CloseClipboard.argtypes = ()
+user32.CloseClipboard.restype = wintypes.BOOL
+user32.MessageBoxW.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT)
+user32.MessageBoxW.restype = ctypes.c_int
+
+kernel32.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
+kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+kernel32.GlobalLock.argtypes = (wintypes.HGLOBAL,)
+kernel32.GlobalLock.restype = wintypes.LPVOID
+kernel32.GlobalUnlock.argtypes = (wintypes.HGLOBAL,)
+kernel32.GlobalUnlock.restype = wintypes.BOOL
+kernel32.GlobalFree.argtypes = (wintypes.HGLOBAL,)
+kernel32.GlobalFree.restype = wintypes.HGLOBAL
+kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+shell32.IsUserAnAdmin.argtypes = ()
+shell32.IsUserAnAdmin.restype = wintypes.BOOL
+shell32.ShellExecuteW.argtypes = (
+    wintypes.HWND,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    ctypes.c_int,
+)
+shell32.ShellExecuteW.restype = wintypes.HINSTANCE
+
+
+# Virtual-Key mapping by DOM KeyboardEvent.code (physical key)
+CODE_TO_VK: dict[str, int] = {
+    **{f"Key{chr(c)}": c for c in range(ord("A"), ord("Z") + 1)},
+    **{f"Digit{d}": 0x30 + d for d in range(10)},
+    **{f"Numpad{d}": 0x60 + d for d in range(10)},
+    **{f"F{n}": 0x6F + n for n in range(1, 13)},
+    "Backspace": 0x08,
+    "Tab": 0x09,
+    "Enter": 0x0D,
+    "NumpadEnter": 0x0D,
+    "ShiftLeft": 0xA0,
+    "ShiftRight": 0xA1,
+    "ControlLeft": 0xA2,
+    "ControlRight": 0xA3,
+    "AltLeft": 0xA4,
+    "AltRight": 0xA5,
+    "Pause": 0x13,
+    "CapsLock": 0x14,
+    "Escape": 0x1B,
+    "Space": 0x20,
+    "PageUp": 0x21,
+    "PageDown": 0x22,
+    "End": 0x23,
+    "Home": 0x24,
+    "ArrowLeft": 0x25,
+    "ArrowUp": 0x26,
+    "ArrowRight": 0x27,
+    "ArrowDown": 0x28,
+    "PrintScreen": 0x2C,
+    "Insert": 0x2D,
+    "Delete": 0x2E,
+    "MetaLeft": 0x5B,
+    "MetaRight": 0x5C,
+    "ContextMenu": 0x5D,
+    "NumpadMultiply": 0x6A,
+    "NumpadAdd": 0x6B,
+    "NumpadSubtract": 0x6D,
+    "NumpadDecimal": 0x6E,
+    "NumpadDivide": 0x6F,
+    "NumLock": 0x90,
+    "ScrollLock": 0x91,
+    "Semicolon": 0xBA,
+    "Equal": 0xBB,
+    "Comma": 0xBC,
+    "Minus": 0xBD,
+    "Period": 0xBE,
+    "Slash": 0xBF,
+    "Backquote": 0xC0,
+    "BracketLeft": 0xDB,
+    "Backslash": 0xDC,
+    "BracketRight": 0xDD,
+    "Quote": 0xDE,
+}
+
+# Fallback mapping by DOM KeyboardEvent.key or shortcut name
+KEY_TO_VK: dict[str, int] = {
+    "backspace": 0x08,
+    "tab": 0x09,
+    "enter": 0x0D,
+    "return": 0x0D,
+    "shift": 0x10,
+    "control": 0x11,
+    "ctrl": 0x11,
+    "alt": 0x12,
+    "pause": 0x13,
+    "capslock": 0x14,
+    "escape": 0x1B,
+    "esc": 0x1B,
+    " ": 0x20,
+    "space": 0x20,
+    "pageup": 0x21,
+    "pagedown": 0x22,
+    "end": 0x23,
+    "home": 0x24,
+    "arrowleft": 0x25,
+    "left": 0x25,
+    "arrowup": 0x26,
+    "up": 0x26,
+    "arrowright": 0x27,
+    "right": 0x27,
+    "arrowdown": 0x28,
+    "down": 0x28,
+    "printscreen": 0x2C,
+    "insert": 0x2D,
+    "delete": 0x2E,
+    "del": 0x2E,
+    "meta": 0x5B,
+    "win": 0x5B,
+    "winleft": 0x5B,
+    "winright": 0x5C,
+    "contextmenu": 0x5D,
+    "numlock": 0x90,
+    "scrolllock": 0x91,
+    **{f"f{n}": 0x6F + n for n in range(1, 13)},
+    **{chr(c).lower(): c for c in range(ord("A"), ord("Z") + 1)},
+    **{str(d): 0x30 + d for d in range(10)},
+}
+
+EXTENDED_VKS = {
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+    0x2C, 0x2D, 0x2E, 0x5B, 0x5C, 0x5D, 0x6F, 0x90,
+    0xA3, 0xA5,
+}
+EXTENDED_CODES = {"NumpadEnter", "NumpadDivide", "ControlRight", "AltRight", "MetaLeft", "MetaRight"}
+
+
+def enable_dpi_awareness() -> None:
+    """Configure Per-Monitor V2 DPI awareness so screen coordinates map 1:1."""
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def is_admin() -> bool:
+    """Return True if the current process runs with Administrator privileges."""
+    try:
+        return bool(shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def ensure_admin_elevation() -> None:
+    """Prompt UAC elevation when launched directly without Administrator rights."""
+    if is_admin() or "--no-elevate" in sys.argv:
+        return
+
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+    else:
+        executable = sys.executable
+        script_path = os.path.abspath(__file__)
+        extra = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+        params = f'"{script_path}" {extra}'.strip()
+
+    ret = shell32.ShellExecuteW(None, "runas", executable, params, None, 1)
+    if int(ret) > 32:
+        sys.exit(0)
+
+
+def acquire_single_instance() -> wintypes.HANDLE | None:
+    """Ensure only one instance of RemoteAgent runs at a time."""
+    handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        user32.MessageBoxW(
+            None,
+            "โปรแกรม RemoteAgent กำลังทำงานอยู่แล้ว\nกรุณาตรวจสอบที่ไอคอนมุมขวาล่าง (System Tray)",
+            "AnySupport RemoteAgent",
+            MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
+        )
+        return None
+    return handle
+
+
+def is_origin_trusted(origin: str | None) -> bool:
+    """Check whether the browser Origin header belongs to a trusted host."""
+    if not origin or origin == "null":
+        return True
+    if origin.lower().startswith("file://"):
+        return True
+    extra = os.environ.get("AGENT_ALLOWED_ORIGINS", "")
+    if extra:
+        allowed_set = {item.strip().lower() for item in extra.split(",") if item.strip()}
+        if origin.lower() in allowed_set:
+            return True
+    return any(pattern.match(origin) for pattern in TRUSTED_ORIGIN_PATTERNS)
+
+
+class Win32InputController:
+    """Thread-safe Win32 SendInput mouse, keyboard, clipboard, and command controller."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pressed_buttons: set[str] = set()
+        self._pressed_vks: set[int] = set()
+
+    @staticmethod
+    def get_screen_size() -> tuple[int, int]:
+        width = max(1, int(user32.GetSystemMetrics(SM_CXSCREEN)))
+        height = max(1, int(user32.GetSystemMetrics(SM_CYSCREEN)))
+        return width, height
+
+    @staticmethod
+    def _norm_to_abs(x: float, y: float) -> tuple[int, int]:
+        nx = max(0.0, min(1.0, float(x)))
+        ny = max(0.0, min(1.0, float(y)))
+        return int(round(nx * 65535)), int(round(ny * 65535))
+
+    @staticmethod
+    def _send_inputs(inputs: list[INPUT]) -> None:
+        if not inputs:
+            return
+        arr = (INPUT * len(inputs))(*inputs)
+        user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+
+    @staticmethod
+    def _make_mouse(dx: int, dy: int, flags: int, mouse_data: int = 0) -> INPUT:
+        inp = INPUT()
+        inp.type = INPUT_MOUSE
+        inp.mi = MOUSEINPUT(
+            dx=dx,
+            dy=dy,
+            mouseData=ctypes.c_uint32(mouse_data).value,
+            dwFlags=flags,
+            time=0,
+            dwExtraInfo=0,
+        )
+        return inp
+
+    @staticmethod
+    def _make_key(vk: int, is_up: bool = False, extended: bool = False) -> INPUT:
+        scan = user32.MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)
+        flags = KEYEVENTF_KEYUP if is_up else 0
+        if extended or vk in EXTENDED_VKS:
+            flags |= KEYEVENTF_EXTENDEDKEY
+        inp = INPUT()
+        inp.type = INPUT_KEYBOARD
+        inp.ki = KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=0)
+        return inp
+
+    @staticmethod
+    def _make_unicode_pair(ch: str) -> list[INPUT]:
+        encoded = ch.encode("utf-16-le")
+        items: list[INPUT] = []
+        for idx in range(0, len(encoded), 2):
+            code_unit = int.from_bytes(encoded[idx : idx + 2], "little")
+            down = INPUT(type=INPUT_KEYBOARD)
+            down.ki = KEYBDINPUT(wVk=0, wScan=code_unit, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)
+            up = INPUT(type=INPUT_KEYBOARD)
+            up.ki = KEYBDINPUT(
+                wVk=0,
+                wScan=code_unit,
+                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=0,
+            )
+            items.extend((down, up))
+        return items
+
+    def move_mouse(self, x: float, y: float) -> None:
+        ax, ay = self._norm_to_abs(x, y)
+        with self._lock:
+            self._send_inputs([self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)])
+
+    def mouse_button(self, x: float, y: float, button: str, down: bool) -> None:
+        ax, ay = self._norm_to_abs(x, y)
+        btn = button if button in ("left", "middle", "right") else "left"
+        flag_map = {
+            ("left", True): MOUSEEVENTF_LEFTDOWN,
+            ("left", False): MOUSEEVENTF_LEFTUP,
+            ("middle", True): MOUSEEVENTF_MIDDLEDOWN,
+            ("middle", False): MOUSEEVENTF_MIDDLEUP,
+            ("right", True): MOUSEEVENTF_RIGHTDOWN,
+            ("right", False): MOUSEEVENTF_RIGHTUP,
+        }
+        with self._lock:
+            if down:
+                self._pressed_buttons.add(btn)
+            else:
+                self._pressed_buttons.discard(btn)
+            self._send_inputs([
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag_map[(btn, down)])
+            ])
+
+    def double_click(self, x: float, y: float) -> None:
+        ax, ay = self._norm_to_abs(x, y)
+        with self._lock:
+            self._send_inputs([
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP),
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP),
+            ])
+
+    def scroll(self, dy: int) -> None:
+        delta = max(-1200, min(1200, int(dy)))
+        with self._lock:
+            self._send_inputs([self._make_mouse(0, 0, MOUSEEVENTF_WHEEL, mouse_data=delta)])
+
+    @staticmethod
+    def _resolve_vk(key: str, code: str) -> tuple[int | None, bool]:
+        if code and code in CODE_TO_VK:
+            return CODE_TO_VK[code], code in EXTENDED_CODES
+        lowered = (key or "").lower()
+        if lowered in KEY_TO_VK:
+            return KEY_TO_VK[lowered], False
+        if len(key or "") == 1 and ord(key) < 128:
+            # Handle shifted ASCII punctuation on US layout via VkKeyScanW
+            res = user32.VkKeyScanW(ord(key))
+            if res != -1:
+                return res & 0xFF, False
+        return None, False
+
+    def handle_key(
+        self,
+        is_down: bool,
+        key: str = "",
+        code: str = "",
+        ctrl: bool = False,
+        alt: bool = False,
+        shift: bool = False,
+        meta: bool = False,
+    ) -> None:
+        with self._lock:
+            has_shortcut_mod = ctrl or alt or meta
+            # Direct Unicode injection for Thai / non-ASCII characters when no shortcut modifier is held
+            if is_down and not has_shortcut_mod and len(key) == 1 and ord(key) > 127:
+                self._send_inputs(self._make_unicode_pair(key))
+                return
+
+            vk, is_ext = self._resolve_vk(key, code)
+            if vk is None:
+                return
+
+            inputs: list[INPUT] = []
+            if is_down:
+                # Ensure modifier state matches browser flags when sending combos
+                mod_families = (
+                    (0x11, ctrl, (0x11, 0xA2, 0xA3)),
+                    (0x12, alt, (0x12, 0xA4, 0xA5)),
+                    (0x10, shift, (0x10, 0xA0, 0xA1)),
+                    (0x5B, meta, (0x5B, 0x5C)),
+                )
+                injected_mods: list[int] = []
+                if vk not in (0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5):
+                    for mod_vk, active, family in mod_families:
+                        already_held = any(v in self._pressed_vks for v in family)
+                        if active and not already_held:
+                            inputs.append(self._make_key(mod_vk, is_up=False))
+                            injected_mods.append(mod_vk)
+                self._pressed_vks.add(vk)
+                inputs.append(self._make_key(vk, is_up=False, extended=is_ext))
+                for mod_vk in reversed(injected_mods):
+                    inputs.append(self._make_key(mod_vk, is_up=True))
+            else:
+                self._pressed_vks.discard(vk)
+                inputs.append(self._make_key(vk, is_up=True, extended=is_ext))
+
+            self._send_inputs(inputs)
+
+    def send_hotkey(self, keys: list[str]) -> None:
+        resolved: list[tuple[int, bool]] = []
+        for raw in keys:
+            vk, is_ext = self._resolve_vk(raw, raw)
+            if vk is not None:
+                resolved.append((vk, is_ext))
+        if not resolved:
+            return
+        with self._lock:
+            inputs = [self._make_key(vk, is_up=False, extended=ext) for vk, ext in resolved]
+            self._send_inputs(inputs)
+        time.sleep(0.025)
+        with self._lock:
+            inputs = [self._make_key(vk, is_up=True, extended=ext) for vk, ext in reversed(resolved)]
+            self._send_inputs(inputs)
+
+    def paste_text(self, text: str) -> bool:
+        if not text:
+            return False
+        data = (text + "\0").encode("utf-16-le")
+        opened = False
+        for _ in range(10):
+            if user32.OpenClipboard(None):
+                opened = True
+                break
+            time.sleep(0.015)
+        if not opened:
+            return False
+
+        try:
+            user32.EmptyClipboard()
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            if not h_mem:
+                return False
+            ptr = kernel32.GlobalLock(h_mem)
+            if not ptr:
+                kernel32.GlobalFree(h_mem)
+                return False
+            ctypes.memmove(ptr, data, len(data))
+            kernel32.GlobalUnlock(h_mem)
+            if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                kernel32.GlobalFree(h_mem)
+                return False
+        finally:
+            user32.CloseClipboard()
+
+        time.sleep(0.04)
+        self.send_hotkey(["ctrl", "v"])
+        return True
+
+    @staticmethod
+    def run_sys_command(cmd_name: str) -> bool:
+        user_home = os.path.expanduser("~")
+        temp_dir = os.environ.get("TEMP") or os.path.join(user_home, "AppData", "Local", "Temp")
+        allowlist: dict[str, tuple[str, str | None, str | None]] = {
+            "taskmgr": ("taskmgr.exe", None, None),
+            "ncpa.cpl": ("control.exe", "ncpa.cpl", None),
+            "devmgmt.msc": ("mmc.exe", "devmgmt.msc", None),
+            "appwiz.cpl": ("control.exe", "appwiz.cpl", None),
+            "temp": ("explorer.exe", temp_dir, None),
+            "cmd": ("cmd.exe", None, user_home),
+        }
+        entry = allowlist.get(cmd_name)
+        if not entry:
+            return False
+        exe, params, workdir = entry
+        ret = shell32.ShellExecuteW(None, "open", exe, params, workdir, 1)
+        return int(ret) > 32
+
+    def release_all_inputs(self) -> None:
+        """Safety cleanup to release any held mouse buttons or keys."""
+        with self._lock:
+            inputs: list[INPUT] = []
+            up_flags = {
+                "left": MOUSEEVENTF_LEFTUP,
+                "middle": MOUSEEVENTF_MIDDLEUP,
+                "right": MOUSEEVENTF_RIGHTUP,
+            }
+            for btn in list(self._pressed_buttons):
+                inputs.append(self._make_mouse(0, 0, up_flags[btn]))
+            self._pressed_buttons.clear()
+
+            for vk in list(self._pressed_vks):
+                inputs.append(self._make_key(vk, is_up=True))
+            self._pressed_vks.clear()
+            self._send_inputs(inputs)
+
+
+def create_tray_icon_image(state: str = "waiting") -> Image.Image:
+    """Render a crisp Navy & Gold tray icon with status dot (waiting / connected / paused)."""
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Navy rounded square background (#1E3A8A)
+    draw.rounded_rectangle([2, 2, 61, 61], radius=14, fill=(30, 58, 138, 255), outline=(251, 191, 36, 255), width=3)
+
+    # Stylised crosshair / cursor motif in Gold (#FBBF24)
+    draw.ellipse([16, 16, 48, 48], outline=(251, 191, 36, 255), width=4)
+    draw.ellipse([27, 27, 37, 37], fill=(255, 255, 255, 255))
+
+    # Bottom-right live status dot
+    dot_colors = {
+        "waiting": (251, 191, 36, 255),    # Amber
+        "connected": (16, 185, 129, 255),  # Emerald
+        "paused": (239, 68, 68, 255),      # Rose
+    }
+    dot_color = dot_colors.get(state, dot_colors["waiting"])
+    draw.ellipse([42, 42, 60, 60], fill=dot_color, outline=(255, 255, 255, 255), width=2)
+    return img
+
+
+class RemoteAgentApp:
+    """Coordinates the asyncio WebSocket server and Windows System Tray UI."""
+
+    def __init__(self) -> None:
+        self.controller = Win32InputController()
+        self.paused = False
+        self.active_ws: ServerConnection | None = None
+        self.active_origin: str | None = None
+        self.session_approved_origins: set[str] = set()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.stop_event: asyncio.Event | None = None
+        self.tray_icon: pystray.Icon | None = None
+        self._icon_cache = {
+            "waiting": create_tray_icon_image("waiting"),
+            "connected": create_tray_icon_image("connected"),
+            "paused": create_tray_icon_image("paused"),
+        }
+
+    def _current_state(self) -> str:
+        if self.paused:
+            return "paused"
+        if self.active_ws is not None:
+            return "connected"
+        return "waiting"
+
+    def _status_text(self) -> str:
+        state = self._current_state()
+        admin_label = "Admin" if is_admin() else "Standard"
+        if state == "paused":
+            return f"หยุดควบคุมชั่วคราว ({admin_label})"
+        if state == "connected":
+            return f"กำลังเชื่อมต่อควบคุมเครื่อง ({admin_label})"
+        return f"พร้อมเชื่อมต่อ ws://{HOST}:{PORT} ({admin_label})"
+
+    def refresh_tray(self) -> None:
+        if not self.tray_icon:
+            return
+        state = self._current_state()
+        self.tray_icon.icon = self._icon_cache[state]
+        self.tray_icon.title = f"AnySupport RemoteAgent - {self._status_text()}"
+        self.tray_icon.update_menu()
+
+    async def _send_status(self, ws: ServerConnection) -> None:
+        width, height = self.controller.get_screen_size()
+        payload = {
+            "type": "agent_status",
+            "version": AGENT_VERSION,
+            "isAdmin": is_admin(),
+            "paused": self.paused,
+            "screenWidth": width,
+            "screenHeight": height,
+        }
+        try:
+            await ws.send(json.dumps(payload))
+        except Exception:
+            pass
+
+    def _prompt_origin_approval(self, origin: str) -> bool:
+        result = user32.MessageBoxW(
+            None,
+            (
+                f"เว็บไซต์ต่อไปนี้ต้องการเชื่อมต่อควบคุมเมาส์และคีย์บอร์ด:\n\n"
+                f"{origin}\n\n"
+                f"คุณต้องการอนุญาตให้เว็บไซต์นี้ควบคุมเครื่องหรือไม่?"
+            ),
+            "AnySupport RemoteAgent - ยืนยันความปลอดภัย",
+            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        )
+        return result == IDYES
+
+    async def _ensure_origin_authorized(self, ws: ServerConnection, origin: str | None) -> bool:
+        if is_origin_trusted(origin):
+            return True
+        assert origin is not None
+        if origin in self.session_approved_origins:
+            return True
+        approved = await asyncio.to_thread(self._prompt_origin_approval, origin)
+        if approved:
+            self.session_approved_origins.add(origin)
+            return True
+        await ws.close(code=4003, reason="Origin rejected by user")
+        return False
+
+    async def handle_client(self, ws: ServerConnection) -> None:
+        origin = ws.request.headers.get("Origin") if ws.request else None
+
+        # Close any stale previous browser tab connection cleanly
+        if self.active_ws is not None and self.active_ws is not ws:
+            try:
+                await self.active_ws.close(code=4000, reason="Replaced by newer session")
+            except Exception:
+                pass
+
+        self.active_ws = ws
+        self.active_origin = origin
+        self.refresh_tray()
+        await self._send_status(ws)
+
+        try:
+            async for raw in ws:
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    msg: dict[str, Any] = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+
+                msg_type = msg.get("type")
+                if msg_type == "ping":
+                    await self._send_status(ws)
+                    continue
+
+                if msg_type == "release_all":
+                    self.controller.release_all_inputs()
+                    continue
+
+                if self.paused:
+                    continue
+
+                # Verify browser Origin before accepting any system/input control event
+                if not await self._ensure_origin_authorized(ws, origin):
+                    break
+
+                await self._dispatch_control_event(msg_type, msg)
+        except ConnectionClosed:
+            pass
+        finally:
+            self.controller.release_all_inputs()
+            if self.active_ws is ws:
+                self.active_ws = None
+                self.active_origin = None
+                self.refresh_tray()
+
+    async def _dispatch_control_event(self, msg_type: str | None, msg: dict[str, Any]) -> None:
+        try:
+            if msg_type == "mousemove":
+                self.controller.move_mouse(float(msg.get("x", 0.5)), float(msg.get("y", 0.5)))
+            elif msg_type == "mousedown":
+                self.controller.mouse_button(
+                    float(msg.get("x", 0.5)),
+                    float(msg.get("y", 0.5)),
+                    str(msg.get("button", "left")),
+                    down=True,
+                )
+            elif msg_type == "mouseup":
+                self.controller.mouse_button(
+                    float(msg.get("x", 0.5)),
+                    float(msg.get("y", 0.5)),
+                    str(msg.get("button", "left")),
+                    down=False,
+                )
+            elif msg_type == "dblclick":
+                self.controller.double_click(float(msg.get("x", 0.5)), float(msg.get("y", 0.5)))
+            elif msg_type == "scroll":
+                self.controller.scroll(int(msg.get("dy", 0)))
+            elif msg_type in ("keydown", "keyup"):
+                self.controller.handle_key(
+                    is_down=(msg_type == "keydown"),
+                    key=str(msg.get("key", "")),
+                    code=str(msg.get("code", "")),
+                    ctrl=bool(msg.get("ctrl", False)),
+                    alt=bool(msg.get("alt", False)),
+                    shift=bool(msg.get("shift", False)),
+                    meta=bool(msg.get("meta", False)),
+                )
+            elif msg_type == "hotkey":
+                keys = msg.get("keys")
+                if isinstance(keys, list):
+                    self.controller.send_hotkey([str(k) for k in keys])
+            elif msg_type == "paste_text":
+                self.controller.paste_text(str(msg.get("text", "")))
+            elif msg_type == "sys_cmd":
+                self.controller.run_sys_command(str(msg.get("cmd", "")))
+        except (TypeError, ValueError):
+            return
+
+    async def _ws_server_main(self) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.stop_event = asyncio.Event()
+        async with serve(self.handle_client, HOST, PORT, ping_interval=20, ping_timeout=20):
+            await self.stop_event.wait()
+
+    def _run_ws_thread(self) -> None:
+        try:
+            asyncio.run(self._ws_server_main())
+        except OSError:
+            user32.MessageBoxW(
+                None,
+                f"ไม่สามารถเปิดพอร์ต {HOST}:{PORT} ได้\nอาจมีโปรแกรมอื่นใช้งานพอร์ตนี้อยู่",
+                "AnySupport RemoteAgent - Error",
+                MB_OK | MB_TOPMOST,
+            )
+            if self.tray_icon:
+                self.tray_icon.stop()
+
+    def _on_toggle_pause(self, icon: pystray.Icon, item: Item) -> None:
+        self.paused = not self.paused
+        if self.paused:
+            self.controller.release_all_inputs()
+        if self.loop and self.active_ws:
+            asyncio.run_coroutine_threadsafe(self._send_status(self.active_ws), self.loop)
+        self.refresh_tray()
+
+    def _on_disconnect_client(self, icon: pystray.Icon, item: Item) -> None:
+        self.controller.release_all_inputs()
+        if self.loop and self.active_ws:
+            asyncio.run_coroutine_threadsafe(
+                self.active_ws.close(code=4001, reason="Disconnected from system tray"),
+                self.loop,
+            )
+
+    def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
+        self.controller.release_all_inputs()
+        if self.loop and self.stop_event:
+            self.loop.call_soon_threadsafe(self.stop_event.set)
+        icon.stop()
+
+    def run(self) -> None:
+        ws_thread = threading.Thread(target=self._run_ws_thread, daemon=True)
+        ws_thread.start()
+
+        menu = pystray.Menu(
+            Item(lambda item: f"สถานะ: {self._status_text()}", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            Item(
+                lambda item: "เปิดรับการควบคุม (Resume)" if self.paused else "หยุดควบคุมชั่วคราว (Pause)",
+                self._on_toggle_pause,
+            ),
+            Item(
+                "ตัดการเชื่อมต่อปัจจุบัน",
+                self._on_disconnect_client,
+                enabled=lambda item: self.active_ws is not None,
+            ),
+            pystray.Menu.SEPARATOR,
+            Item("ออกจากโปรแกรม (Exit)", self._on_exit),
+        )
+
+        self.tray_icon = pystray.Icon(
+            "AnySupportRemoteAgent",
+            self._icon_cache["waiting"],
+            f"AnySupport RemoteAgent - {self._status_text()}",
+            menu,
+        )
+        self.tray_icon.run()
+
+
+def main() -> None:
+    enable_dpi_awareness()
+    ensure_admin_elevation()
+    mutex_handle = acquire_single_instance()
+    if not mutex_handle:
+        sys.exit(0)
+
+    app = RemoteAgentApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
