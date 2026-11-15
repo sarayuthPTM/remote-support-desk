@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from typing import Any
+import webbrowser
 
 from PIL import Image, ImageDraw
 import pystray
@@ -24,7 +25,8 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.0.0"
+AGENT_VERSION = "2.1.0"
+WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
 
 # Allowed browser origins by default (localhost, 127.0.0.1, Vercel, GitHub Pages, local file)
@@ -309,16 +311,19 @@ def ensure_admin_elevation() -> None:
         sys.exit(0)
 
 
+def open_web_portal() -> None:
+    """Open the AnySupport Web portal in the default browser."""
+    try:
+        webbrowser.open(WEB_URL, new=2)
+    except Exception:
+        pass
+
+
 def acquire_single_instance() -> wintypes.HANDLE | None:
-    """Ensure only one instance of RemoteAgent runs at a time."""
+    """Ensure only one instance runs; if already open, bring up the web portal."""
     handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-        user32.MessageBoxW(
-            None,
-            "โปรแกรม RemoteAgent กำลังทำงานอยู่แล้ว\nกรุณาตรวจสอบที่ไอคอนมุมขวาล่าง (System Tray)",
-            "AnySupport RemoteAgent",
-            MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
-        )
+        open_web_portal()
         return None
     return handle
 
@@ -832,6 +837,27 @@ class RemoteAgentApp:
         if self.loop and self.clients:
             asyncio.run_coroutine_threadsafe(self._close_all_clients(), self.loop)
 
+    def _on_open_web(self, icon: pystray.Icon, item: Item) -> None:
+        open_web_portal()
+
+    def _auto_open_web_if_no_client(self) -> None:
+        if not self.clients:
+            open_web_portal()
+
+    def _on_tray_ready(self, icon: pystray.Icon) -> None:
+        icon.visible = True
+        try:
+            if icon.HAS_NOTIFICATION:
+                icon.notify(
+                    "โปรแกรมพร้อมใช้งานที่มุมขวาล่างแล้ว (คลิกไอคอนเพื่อเปิดหน้าเว็บ)",
+                    "AnySupport RemoteAgent",
+                )
+        except Exception:
+            pass
+        timer = threading.Timer(2.5, self._auto_open_web_if_no_client)
+        timer.daemon = True
+        timer.start()
+
     def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
         self.controller.release_all_inputs()
         if self.loop and self.stop_event:
@@ -843,6 +869,8 @@ class RemoteAgentApp:
         ws_thread.start()
 
         menu = pystray.Menu(
+            Item("🌐 เปิดหน้าเว็บ AnySupport Web", self._on_open_web, default=True),
+            pystray.Menu.SEPARATOR,
             Item(lambda item: f"สถานะ: {self._status_text()}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             Item(
@@ -864,7 +892,7 @@ class RemoteAgentApp:
             f"AnySupport RemoteAgent - {self._status_text()}",
             menu,
         )
-        self.tray_icon.run()
+        self.tray_icon.run(setup=self._on_tray_ready)
 
 
 def main() -> None:
