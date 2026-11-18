@@ -92,9 +92,14 @@
             <span class="text-xs font-semibold px-2.5 py-1 rounded-md bg-blue-50 text-[#1E3A8A] border border-blue-200 whitespace-nowrap shrink-0">
               ผู้ขอความช่วยเหลือ
             </span>
-            <span id="agentStatusBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 whitespace-nowrap truncate">
-              ⏳ กำลังตรวจสอบ Agent...
-            </span>
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span id="agentStatusBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 whitespace-nowrap truncate">
+                ⏳ กำลังตรวจสอบ Agent...
+              </span>
+              <button id="retryAgentBtn" onclick="manualReconnectLocalAgent()" title="กดเพื่อลองเชื่อม RemoteAgent.exe และขอสิทธิ์เบราว์เซอร์อีกครั้ง" class="hidden shrink-0 text-[11px] font-semibold px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] border border-blue-200 transition">
+                🔄 เชื่อมใหม่
+              </button>
+            </div>
           </div>
 
           <h2 class="text-xl font-bold text-slate-900 mb-1">รหัสประจำเครื่องของคุณ</h2>
@@ -233,7 +238,7 @@
         <!-- เครื่องมือควบคุมหน้าจอ / วาดจอ / ไมค์ / คุณภาพ / แคปภาพ -->
         <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 cursor-pointer text-xs font-semibold text-slate-700">
-            <input id="enableControlToggle" type="checkbox" checked class="accent-[#1E3A8A] w-4 h-4" />
+            <input id="enableControlToggle" type="checkbox" checked onchange="syncAdminControlOverlay()" class="accent-[#1E3A8A] w-4 h-4" />
             <span>ควบคุมเมาส์/คีย์บอร์ด</span>
           </label>
 
@@ -359,6 +364,7 @@
         <span id="keyboardFocusBadge" class="hidden absolute top-3 left-3 z-20 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#1E3A8A]/90 text-amber-300 border border-amber-400/50 pointer-events-none">
           ⌨️ กำลังส่งแป้นพิมพ์ไปยังเครื่องปลายทาง
         </span>
+        <span id="adminOverlayStatusPill" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate"></span>
         <div class="relative inline-block max-w-full">
           <video id="remoteVideo" autoplay muted playsinline class="max-w-full max-h-[78vh] select-none cursor-crosshair-custom block touch-none"></video>
           <canvas id="adminAnnotateCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
@@ -777,6 +783,7 @@
     let hasWarnedOldAgent = false;
     let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "", blockedByBrowser: false };
     let lastAdminAgentWarnKey = "";
+    let adminRemoteAgentInfo = null;
 
     async function checkLocalNetworkBlocked() {
       try {
@@ -790,43 +797,93 @@
       }
     }
 
+    function manualReconnectLocalAgent() {
+      if (localAgentWs) {
+        try {
+          localAgentWs.close();
+        } catch {}
+        localAgentWs = null;
+      }
+      connectLocalAgent();
+      showToast("กำลังเชื่อม RemoteAgent.exe ใหม่ (หาก Chrome ถามสิทธิ์ให้กด อนุญาต)", "info");
+    }
+
     function sendHostAgentStatusToAdmin() {
       if (dataConn && dataConn.open) {
         dataConn.send(JSON.stringify({ type: "host_agent_status", ...lastAgentInfo }));
       }
     }
 
-    function updateAdminHostAgentBadge(info) {
-      const badge = document.getElementById("adminHostAgentBadge");
-      if (!badge) return;
-      badge.classList.remove("hidden");
-      if (!info || !info.online) {
-        if (info && info.blockedByBrowser) {
-          badge.textContent = "⚠️ Chrome ปลายทางบล็อกการเชื่อม RemoteAgent";
-          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300";
-        } else {
-          badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
-          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
-        }
-      } else if (info.paused) {
-        badge.textContent = "⏸ ปลายทางหยุดควบคุมชั่วคราว";
-        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
-      } else {
-        const ver = info.version ? ` v${info.version}` : "";
-        const role = info.isAdmin ? " Admin" : "";
-        badge.textContent = `🖱️ ปลายทางพร้อมคุม (${ver}${role})`.replace("( ", "(");
-        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+    function syncAdminControlOverlay() {
+      const pill = document.getElementById("adminOverlayStatusPill");
+      if (!pill) return;
+      if (!remoteVideo || !remoteVideo.srcObject) {
+        pill.classList.add("hidden");
+        return;
       }
+      const ctrlToggle = document.getElementById("enableControlToggle");
+      const ctrlEnabled = ctrlToggle ? ctrlToggle.checked : true;
+      const info = adminRemoteAgentInfo;
+
+      if (!ctrlEnabled) {
+        pill.textContent = "⚠️ ปิดโหมดควบคุมอยู่ (ติ๊ก 'ควบคุมเมาส์/คีย์บอร์ด' ด้านบนเพื่อสั่งงาน)";
+        pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-amber-50/95 text-amber-900 border-amber-300";
+        return;
+      }
+      if (info && !info.online) {
+        if (info.blockedByBrowser) {
+          pill.textContent = "🟠 Chrome ปลายทางบล็อก RemoteAgent (กดไอคอนข้าง URL → อนุญาต)";
+          pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-amber-50/95 text-amber-900 border-amber-300";
+        } else {
+          pill.textContent = "🔴 ดูได้อย่างเดียว — ปลายทางยังไม่เปิด RemoteAgent.exe";
+          pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-rose-50/95 text-rose-800 border-rose-300";
+        }
+        return;
+      }
+      if (info && info.paused) {
+        pill.textContent = "⏸ ปลายทางกดหยุดควบคุมชั่วคราว";
+        pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-amber-50/95 text-amber-900 border-amber-300";
+        return;
+      }
+      pill.classList.add("hidden");
+    }
+
+    function updateAdminHostAgentBadge(info) {
+      adminRemoteAgentInfo = info || null;
+      const badge = document.getElementById("adminHostAgentBadge");
+      if (badge) {
+        badge.classList.remove("hidden");
+        if (!info || !info.online) {
+          if (info && info.blockedByBrowser) {
+            badge.textContent = "⚠️ Chrome ปลายทางบล็อกการเชื่อม RemoteAgent";
+            badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300";
+          } else {
+            badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
+            badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
+          }
+        } else if (info.paused) {
+          badge.textContent = "⏸ ปลายทางหยุดควบคุมชั่วคราว";
+          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
+        } else {
+          const ver = info.version ? ` v${info.version}` : "";
+          const role = info.isAdmin ? " Admin" : "";
+          badge.textContent = `🖱️ ปลายทางพร้อมคุม (${ver}${role})`.replace("( ", "(");
+          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+        }
+      }
+      syncAdminControlOverlay();
     }
 
     function updateAgentBadge(state, detail = "") {
       const badge = document.getElementById("agentStatusBadge");
+      const retryBtn = document.getElementById("retryAgentBtn");
       if (state === "ready" || state === "paused") {
         if (agentOfflineTimer) {
           clearTimeout(agentOfflineTimer);
           agentOfflineTimer = null;
         }
         lastAgentState = state;
+        if (retryBtn) retryBtn.classList.add("hidden");
         if (state === "ready") {
           badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300 whitespace-nowrap truncate";
           badge.textContent = `● พร้อมควบคุมเครื่อง${detail}`;
@@ -858,6 +915,7 @@
         if (prevState !== "offline" || prevBlocked !== isBlocked) {
           sendHostAgentStatusToAdmin();
         }
+        if (retryBtn) retryBtn.classList.remove("hidden");
         if (isBlocked) {
           badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 whitespace-nowrap truncate";
           badge.textContent = "⚠️ Chrome บล็อกการเชื่อม RemoteAgent (กดไอคอนข้าง URL → อนุญาต)";
@@ -1580,6 +1638,7 @@
             remoteVideo.play().catch(() => {});
           });
           document.getElementById("remotePlaceholder").classList.add("hidden");
+          syncAdminControlOverlay();
           statusEl.textContent = "● เชื่อมต่อและพร้อมควบคุมแล้ว";
           statusEl.className = "text-xs text-emerald-600 ml-1 font-bold";
           showToast("เชื่อมต่อหน้าจอปลายทางสำเร็จ", "success");
@@ -1630,6 +1689,8 @@
       document.getElementById("adminIceBadge").classList.add("hidden");
       document.getElementById("adminHostAgentBadge").classList.add("hidden");
       lastAdminAgentWarnKey = "";
+      adminRemoteAgentInfo = null;
+      syncAdminControlOverlay();
       const monWrap = document.getElementById("adminMonitorWrap");
       monWrap.classList.add("hidden");
       monWrap.classList.remove("flex");
