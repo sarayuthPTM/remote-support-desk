@@ -245,8 +245,9 @@
           <div class="flex items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200 text-xs">
             <span class="font-semibold text-slate-600">📶 ภาพ:</span>
             <select id="qualitySelect" onchange="changeStreamQuality(this.value)" class="bg-transparent font-bold text-[#1E3A8A] focus:outline-none cursor-pointer">
+              <option value="fast">⚡ ลื่นพิเศษ (ดีเลย์ต่ำ)</option>
               <option value="low">ประหยัดเน็ต</option>
-              <option value="medium" selected>ปกติ</option>
+              <option value="medium" selected>ปกติ (สมดุล)</option>
               <option value="high">คมชัด</option>
             </select>
           </div>
@@ -509,9 +510,10 @@
     const TURN_STORAGE_KEY = "anysupport_custom_turn_v1";
 
     const QUALITY_PRESETS = {
-      low: { label: "ประหยัดเน็ต", maxBitrate: 450_000, scaleResolutionDownBy: 2.0, maxFramerate: 12 },
-      medium: { label: "ปกติ", maxBitrate: 1_500_000, scaleResolutionDownBy: 1.25, maxFramerate: 24 },
-      high: { label: "คมชัด", maxBitrate: 4_000_000, scaleResolutionDownBy: 1.0, maxFramerate: 30 }
+      fast: { label: "ลื่นพิเศษ (ดีเลย์ต่ำ)", maxBitrate: 1_100_000, scaleResolutionDownBy: 1.5, maxFramerate: 30, contentHint: "motion" },
+      low: { label: "ประหยัดเน็ต", maxBitrate: 450_000, scaleResolutionDownBy: 2.0, maxFramerate: 15, contentHint: "motion" },
+      medium: { label: "ปกติ (สมดุล)", maxBitrate: 1_600_000, scaleResolutionDownBy: 1.25, maxFramerate: 30, contentHint: "motion" },
+      high: { label: "คมชัด", maxBitrate: 4_000_000, scaleResolutionDownBy: 1.0, maxFramerate: 30, contentHint: "detail" }
     };
 
     const DEFAULT_STUN_SERVERS = [
@@ -524,6 +526,9 @@
     let currentMode = "host";
     let peer = null;
     let dataConn = null;
+    let fastHostConn = null;
+    let fastAdminConn = null;
+    let iceStatsTimer = null;
     let pendingConn = null;
     let activeMediaCall = null;
     let activeVoiceCall = null;
@@ -1130,6 +1135,37 @@
         if (peer !== hostPeer) return;
 
         conn.on("open", () => {
+          // Allow secondary unordered low-latency channel ONLY from already-approved active peer
+          if (conn.metadata && conn.metadata.kind === "mouse-fast") {
+            if (!dataConn || !dataConn.open || conn.peer !== dataConn.peer) {
+              try {
+                conn.close();
+              } catch {}
+              return;
+            }
+            if (fastHostConn && fastHostConn !== conn && fastHostConn.open) {
+              try {
+                fastHostConn.close();
+              } catch {}
+            }
+            fastHostConn = conn;
+            conn.on("data", (rawMsg) => {
+              if (fastHostConn !== conn) return;
+              const parsed = safeParseMessage(rawMsg);
+              if (!parsed || parsed.type !== "mousemove") return;
+              if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+                localAgentWs.send(JSON.stringify({ type: "mousemove", x: parsed.x, y: parsed.y }));
+              }
+            });
+            conn.on("close", () => {
+              if (fastHostConn === conn) fastHostConn = null;
+            });
+            conn.on("error", () => {
+              if (fastHostConn === conn) fastHostConn = null;
+            });
+            return;
+          }
+
           // Reject simultaneous extra connection cleanly if one is already pending or active
           if ((dataConn && dataConn.open) || (pendingConn && pendingConn !== conn)) {
             conn.send(JSON.stringify({ type: "rejected", reason: "busy" }));
@@ -1219,7 +1255,13 @@
         localPreviewVideo.srcObject = localStream;
         document.getElementById("localVideoPlaceholder").classList.add("hidden");
 
-        localStream.getVideoTracks()[0].onended = () => stopHostSession(true);
+        const shareTrack = localStream.getVideoTracks()[0];
+        if (shareTrack) {
+          try {
+            shareTrack.contentHint = "motion";
+          } catch {}
+          shareTrack.onended = () => stopHostSession(true);
+        }
 
         setButtonLoading(startBtn, true, "กำลังสร้างรหัสห้อง...");
         registerHostPeer(generatePin());
@@ -1275,7 +1317,7 @@
           } catch {}
         }
         activeMediaCall = peer.call(conn.peer, localStream, { metadata: { kind: "screen" } });
-        setTimeout(() => applyStreamQualityPreset(currentQualityPreset), 600);
+        setTimeout(() => applyStreamQualityPreset(currentQualityPreset), 200);
       }
       if (peer && localCamStream) {
         sendOutgoingCameraCall(conn.peer);
@@ -1374,6 +1416,12 @@
       const handleDisconnect = () => {
         if (dataConn !== conn) return;
         dataConn = null;
+        if (fastHostConn) {
+          try {
+            fastHostConn.close();
+          } catch {}
+          fastHostConn = null;
+        }
         if (activeMediaCall) {
           try {
             activeMediaCall.close();
@@ -1400,6 +1448,12 @@
     function stopHostSession(silent = false) {
       hideApprovalModal();
       pendingConn = null;
+      if (fastHostConn) {
+        try {
+          fastHostConn.close();
+        } catch {}
+        fastHostConn = null;
+      }
       if (dataConn) {
         try {
           dataConn.close();
@@ -1606,6 +1660,63 @@
         }
       });
 
+      function applyLowLatencyReceiver(pc) {
+        if (!pc || typeof pc.getReceivers !== "function") return;
+        for (const receiver of pc.getReceivers()) {
+          if (receiver.track && receiver.track.kind === "video") {
+            try {
+              if ("playoutDelayHint" in receiver) receiver.playoutDelayHint = 0;
+            } catch {}
+            try {
+              if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = 0;
+            } catch {}
+          }
+        }
+      }
+
+      function startIceLatencyMonitor(pc) {
+        if (iceStatsTimer) {
+          clearInterval(iceStatsTimer);
+          iceStatsTimer = null;
+        }
+        const badge = document.getElementById("adminIceBadge");
+        const poll = async () => {
+          if (!pc || pc.connectionState === "closed" || !activeMediaCall) {
+            if (iceStatsTimer) {
+              clearInterval(iceStatsTimer);
+              iceStatsTimer = null;
+            }
+            return;
+          }
+          const st = pc.iceConnectionState;
+          if (st !== "connected" && st !== "completed") return;
+          try {
+            const stats = await pc.getStats();
+            let activePair = null;
+            stats.forEach((report) => {
+              if (report.type === "candidate-pair" && report.state === "succeeded" && report.nominated) {
+                activePair = report;
+              }
+            });
+            if (activePair && badge) {
+              const rttMs = typeof activePair.currentRoundTripTime === "number"
+                ? Math.round(activePair.currentRoundTripTime * 1000)
+                : null;
+              const localCand = activePair.localCandidateId ? stats.get(activePair.localCandidateId) : null;
+              const isRelay = localCand && localCand.candidateType === "relay";
+              const routeTag = isRelay ? "Relay" : "P2P";
+              const rttTag = rttMs !== null ? ` • ${rttMs} ms` : "";
+              badge.textContent = `ICE: ${routeTag}${rttTag}`;
+              badge.className = rttMs !== null && rttMs > 180
+                ? "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300"
+                : "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+            }
+          } catch {}
+        };
+        iceStatsTimer = setInterval(poll, 3000);
+        setTimeout(poll, 800);
+      }
+
       adminPeer.on("call", (call) => {
         if (peer !== adminPeer) return;
         if (call.metadata && call.metadata.kind === "camera") {
@@ -1621,6 +1732,8 @@
         call.answer();
         if (call.peerConnection) {
           const pc = call.peerConnection;
+          applyLowLatencyReceiver(pc);
+          pc.addEventListener("track", () => applyLowLatencyReceiver(pc));
           const updateIceBadge = () => {
             const badge = document.getElementById("adminIceBadge");
             if (!badge) return;
@@ -1629,6 +1742,7 @@
             if (st === "connected" || st === "completed") {
               badge.textContent = "ICE: เชื่อมต่อแล้ว";
               badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+              startIceLatencyMonitor(pc);
             } else if (st === "failed" || st === "disconnected") {
               badge.textContent = "ICE: ขัดข้อง (ลองตั้งค่า TURN)";
               badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
@@ -1641,6 +1755,7 @@
           updateIceBadge();
         }
         call.on("stream", (remoteStream) => {
+          applyLowLatencyReceiver(call.peerConnection);
           remoteVideo.srcObject = remoteStream;
           remoteVideo.muted = !isRemoteAudioEnabled;
           remoteVideo.play().catch(() => {
@@ -1654,6 +1769,22 @@
           statusEl.textContent = "● เชื่อมต่อและพร้อมควบคุมแล้ว";
           statusEl.className = "text-xs text-emerald-600 ml-1 font-bold";
           showToast("เชื่อมต่อหน้าจอปลายทางสำเร็จ", "success");
+
+          if ((!fastAdminConn || !fastAdminConn.open) && peer === adminPeer && dataConn && dataConn.open) {
+            try {
+              const fConn = adminPeer.connect(PEER_PREFIX + pin, {
+                reliable: false,
+                metadata: { kind: "mouse-fast" }
+              });
+              fastAdminConn = fConn;
+              fConn.on("close", () => {
+                if (fastAdminConn === fConn) fastAdminConn = null;
+              });
+              fConn.on("error", () => {
+                if (fastAdminConn === fConn) fastAdminConn = null;
+              });
+            } catch {}
+          }
         });
       });
 
@@ -1668,6 +1799,16 @@
 
     function resetAdminMediaUi() {
       activeMouseButtons.clear();
+      if (iceStatsTimer) {
+        clearInterval(iceStatsTimer);
+        iceStatsTimer = null;
+      }
+      if (fastAdminConn) {
+        try {
+          fastAdminConn.close();
+        } catch {}
+        fastAdminConn = null;
+      }
       if (activeMediaCall) {
         try {
           activeMediaCall.close();
@@ -1757,6 +1898,19 @@
       }
     }
 
+    function sendFastMouseMove(pt) {
+      const payload = JSON.stringify({
+        type: "mousemove",
+        x: Number(pt.x.toFixed(4)),
+        y: Number(pt.y.toFixed(4))
+      });
+      if (fastAdminConn && fastAdminConn.open) {
+        fastAdminConn.send(payload);
+      } else if (dataConn && dataConn.open) {
+        dataConn.send(payload);
+      }
+    }
+
     function getNormalizedCoordsFromPoint(clientX, clientY) {
       const rect = remoteVideo.getBoundingClientRect();
       if (!rect.width || !rect.height) return null;
@@ -1789,9 +1943,9 @@
 
       if (!document.getElementById("enableControlToggle").checked) return;
       const now = Date.now();
-      if (now - lastMoveSent < 25) return;
+      if (now - lastMoveSent < 16) return;
       lastMoveSent = now;
-      sendControlEvent({ type: "mousemove", x: pt.x, y: pt.y });
+      sendFastMouseMove(pt);
     });
 
     remoteVideo.addEventListener("mousedown", (e) => {
@@ -1869,9 +2023,9 @@
         lastDrawPt = pt;
       } else if (!isDrawMode && document.getElementById("enableControlToggle").checked) {
         const now = Date.now();
-        if (now - lastMoveSent < 30) return;
+        if (now - lastMoveSent < 20) return;
         lastMoveSent = now;
-        sendControlEvent({ type: "mousemove", x: pt.x, y: pt.y });
+        sendFastMouseMove(pt);
       }
     }, { passive: false });
 
@@ -2811,10 +2965,15 @@
 
       if (localStream) {
         const track = localStream.getVideoTracks()[0];
-        if (track && track.applyConstraints) {
+        if (track) {
           try {
-            await track.applyConstraints({ frameRate: { ideal: cfg.maxFramerate, max: cfg.maxFramerate } });
+            track.contentHint = cfg.contentHint || "motion";
           } catch {}
+          if (track.applyConstraints) {
+            try {
+              await track.applyConstraints({ frameRate: { ideal: cfg.maxFramerate, max: cfg.maxFramerate } });
+            } catch {}
+          }
         }
       }
 
@@ -2827,11 +2986,25 @@
               if (!params.encodings || !params.encodings.length) {
                 params.encodings = [{}];
               }
+              params.degradationPreference = "maintain-framerate";
               params.encodings[0].maxBitrate = cfg.maxBitrate;
               params.encodings[0].scaleResolutionDownBy = cfg.scaleResolutionDownBy;
               params.encodings[0].maxFramerate = cfg.maxFramerate;
+              params.encodings[0].priority = "high";
+              params.encodings[0].networkPriority = "high";
               await sender.setParameters(params);
-            } catch {}
+            } catch {
+              try {
+                const fallbackParams = sender.getParameters();
+                if (!fallbackParams.encodings || !fallbackParams.encodings.length) {
+                  fallbackParams.encodings = [{}];
+                }
+                fallbackParams.encodings[0].maxBitrate = cfg.maxBitrate;
+                fallbackParams.encodings[0].scaleResolutionDownBy = cfg.scaleResolutionDownBy;
+                fallbackParams.encodings[0].maxFramerate = cfg.maxFramerate;
+                await sender.setParameters(fallbackParams);
+              } catch {}
+            }
           }
         }
       }
