@@ -157,21 +157,30 @@
           </div>
         </div>
 
-        <!-- กล่องรับข้อความ และ ไฟล์จากผู้ช่วยเหลือ -->
+        <!-- กล่องแชทพูดคุย 2 ทาง และ ไฟล์จากผู้ช่วยเหลือ -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-            <div class="flex items-center justify-between mb-1.5">
-              <span class="text-xs font-semibold text-[#1E3A8A]">ข้อความ / ลิงก์จากผู้ช่วยเหลือ:</span>
+          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-[#1E3A8A]">💬 แชทพูดคุยกับผู้ช่วยเหลือ:</span>
               <button id="copyTextBtn" onclick="copyReceivedText()" class="text-xs bg-white hover:bg-slate-100 px-2.5 py-1 rounded-md border border-slate-300 text-slate-700 font-medium transition">
-                คัดลอก
+                คัดลอกข้อความล่าสุด
               </button>
             </div>
-            <input id="hostReceivedText" type="text" readonly placeholder="ยังไม่มีข้อความส่งมา..." class="w-full bg-white text-sm text-slate-800 px-3 py-1.5 rounded-lg border border-slate-200 focus:outline-none" />
+            <input id="hostReceivedText" type="hidden" value="" />
+            <div id="hostChatMessages" class="bg-white border border-slate-200 rounded-lg p-2.5 h-28 overflow-y-auto space-y-1.5 text-xs">
+              <p id="hostChatEmptyMsg" class="text-slate-400 text-center py-8">ยังไม่มีข้อความสนทนา...</p>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <input id="hostChatInput" type="text" placeholder="พิมพ์ข้อความตอบกลับผู้ช่วยเหลือ..." class="flex-1 bg-white text-xs sm:text-sm text-slate-800 px-3 py-1.5 rounded-lg border border-slate-300 focus:outline-none focus:border-[#1E3A8A]" />
+              <button onclick="sendHostChatMessage()" class="bg-[#1E3A8A] hover:bg-blue-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shrink-0 transition">
+                ส่ง
+              </button>
+            </div>
           </div>
 
-          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+          <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 flex flex-col">
             <span class="text-xs font-semibold text-[#1E3A8A] block mb-1.5">ไฟล์ที่ได้รับจากผู้ช่วยเหลือ:</span>
-            <div id="hostReceivedFilesList" class="text-xs text-slate-500 max-h-24 overflow-y-auto space-y-1">
+            <div id="hostReceivedFilesList" class="text-xs text-slate-500 flex-1 max-h-40 overflow-y-auto space-y-1">
               <p id="hostFilesEmptyMsg">ยังไม่มีไฟล์ส่งมา...</p>
             </div>
           </div>
@@ -294,6 +303,35 @@
           <p class="text-base font-semibold text-slate-300">กรอกรหัส 6 หลักด้านบนเพื่อดูหน้าจอและควบคุมเมาส์</p>
           <p class="text-xs text-slate-400 mt-1">คลิกในกรอบภาพเพื่อเริ่มบังคับเมาส์และกดแป้นพิมพ์</p>
         </div>
+
+        <!-- กล่องแชทลอยมุมขวาล่างสำหรับพูดคุย 2 ทาง -->
+        <div id="adminChatWidget" class="absolute bottom-3 right-3 z-30 flex flex-col items-end gap-2">
+          <div id="adminChatBox" class="hidden w-72 sm:w-80 bg-white/95 backdrop-blur border border-slate-300 rounded-2xl shadow-2xl overflow-hidden flex-col">
+            <div class="bg-[#1E3A8A] text-white px-3.5 py-2.5 flex items-center justify-between">
+              <span class="text-xs font-bold flex items-center gap-1.5">
+                <span>💬</span>
+                <span>แชทพูดคุยกับผู้ขอความช่วยเหลือ</span>
+              </span>
+              <button onclick="toggleAdminChat(false)" title="ย่อกล่องแชท" class="text-slate-200 hover:text-white text-sm font-bold px-1.5 leading-none">
+                —
+              </button>
+            </div>
+            <div id="adminChatMessages" class="h-48 overflow-y-auto p-3 space-y-2 bg-slate-50 text-xs">
+              <p id="adminChatEmptyMsg" class="text-slate-400 text-center py-14">เริ่มพิมพ์ข้อความเพื่อพูดคุยกัน...</p>
+            </div>
+            <div class="p-2 bg-white border-t border-slate-200 flex items-center gap-1.5">
+              <input id="adminChatInput" type="text" placeholder="พิมพ์ข้อความพูดคุย..." class="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs sm:text-sm text-slate-800 focus:outline-none focus:border-[#1E3A8A]" />
+              <button onclick="sendAdminChatMessage()" class="bg-[#1E3A8A] hover:bg-blue-900 text-white text-xs font-semibold px-3 py-1.5 rounded-xl shrink-0 transition">
+                ส่ง
+              </button>
+            </div>
+          </div>
+
+          <button id="adminChatToggleBtn" onclick="toggleAdminChat()" class="relative bg-[#1E3A8A] hover:bg-blue-900 text-white border border-amber-400/70 shadow-lg px-3.5 py-2 rounded-full text-xs font-bold flex items-center gap-1.5 transition">
+            <span>💬 แชทพูดคุย</span>
+            <span id="adminChatUnreadBadge" class="hidden bg-amber-400 text-slate-950 text-[10px] font-extrabold px-1.5 py-0.5 rounded-full leading-none">0</span>
+          </button>
+        </div>
       </div>
     </section>
 
@@ -390,6 +428,8 @@
     let lastDrawPt = null;
     let wasRejected = false;
     let isRemoteAudioEnabled = false;
+    let isAdminChatOpen = false;
+    let adminUnreadCount = 0;
     let lastMoveSent = 0;
 
     const activeMouseButtons = new Set();
@@ -792,7 +832,9 @@
         if (!parsed) return;
 
         if (parsed.type === "chat_text") {
-          document.getElementById("hostReceivedText").value = String(parsed.text || "");
+          const text = String(parsed.text || "");
+          document.getElementById("hostReceivedText").value = text;
+          appendChatMessage("hostChatMessages", "hostChatEmptyMsg", "ผู้ช่วยเหลือ", text, false);
           showToast("ได้รับข้อความใหม่จากผู้ช่วยเหลือ", "info");
           return;
         }
@@ -892,6 +934,8 @@
       document.getElementById("webrtcHostState").textContent = "สถานะ: รอการเชื่อมต่อ";
       hostStrokes.length = 0;
       clearCanvasEl(hostCanvas);
+      document.getElementById("hostReceivedText").value = "";
+      clearChatBox("hostChatMessages", "hostChatEmptyMsg", "ยังไม่มีข้อความสนทนา...");
 
       if (!silent) {
         showToast("หยุดแชร์หน้าจอและตัดการเชื่อมต่อเรียบร้อย", "info");
@@ -906,12 +950,18 @@
       try {
         await navigator.clipboard.writeText(text);
       } catch {
-        input.select();
+        const tmp = document.createElement("textarea");
+        tmp.value = text;
+        tmp.style.position = "fixed";
+        tmp.style.opacity = "0";
+        document.body.appendChild(tmp);
+        tmp.select();
         document.execCommand("copy");
+        tmp.remove();
       }
       btn.textContent = "คัดลอกแล้ว ✓";
       setTimeout(() => {
-        btn.textContent = "คัดลอก";
+        btn.textContent = "คัดลอกข้อความล่าสุด";
       }, 1500);
     }
 
@@ -956,6 +1006,16 @@
         conn.on("data", (rawMsg) => {
           const parsed = safeParseMessage(rawMsg);
           if (!parsed) return;
+          if (parsed.type === "chat_text") {
+            const text = String(parsed.text || "");
+            appendChatMessage("adminChatMessages", "adminChatEmptyMsg", "ผู้ขอความช่วยเหลือ", text, false);
+            if (!isAdminChatOpen) {
+              adminUnreadCount += 1;
+              updateAdminUnreadBadge();
+              showToast(`ข้อความจากปลายทาง: ${text}`, "info");
+            }
+            return;
+          }
           if (parsed.type === "rejected") {
             wasRejected = true;
             const msg =
@@ -1053,6 +1113,9 @@
       setButtonLoading(joinBtn, false, "เชื่อมต่อ");
       adminStrokes.length = 0;
       clearCanvasEl(adminCanvas);
+      adminUnreadCount = 0;
+      updateAdminUnreadBadge();
+      clearChatBox("adminChatMessages", "adminChatEmptyMsg", "เริ่มพิมพ์ข้อความเพื่อพูดคุยกัน...");
     }
 
     function disconnectAdminSession(silent = false, keepStatus = false) {
@@ -1396,9 +1459,120 @@
       const text = input.value;
       if (!text) return;
       sendControlEvent({ type: autoPaste ? "paste_text" : "chat_text", text });
+      if (!autoPaste) {
+        appendChatMessage("adminChatMessages", "adminChatEmptyMsg", "ฉัน (ผู้ช่วยเหลือ)", text, true);
+      }
       input.value = "";
-      showToast(autoPaste ? "ส่งข้อความวางลงเครื่องปลายทางแล้ว" : "ส่งข้อความเข้ากล่องข้อความแล้ว", "success");
+      showToast(autoPaste ? "ส่งข้อความวางลงเครื่องปลายทางแล้ว" : "ส่งข้อความเข้าแชทเรียบร้อยแล้ว", "success");
     }
+
+    function appendChatMessage(listId, emptyId, senderLabel, text, isSelf) {
+      const listEl = document.getElementById(listId);
+      const emptyEl = document.getElementById(emptyId);
+      if (emptyEl) emptyEl.remove();
+
+      const wrapper = document.createElement("div");
+      wrapper.className = `flex flex-col ${isSelf ? "items-end" : "items-start"}`;
+
+      const meta = document.createElement("span");
+      meta.className = "text-[10px] text-slate-400 mb-0.5 px-1";
+      const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+      meta.textContent = `${senderLabel} • ${timeStr}`;
+
+      const bubble = document.createElement("div");
+      bubble.className = isSelf
+        ? "max-w-[85%] rounded-2xl rounded-tr-sm px-3 py-1.5 bg-[#1E3A8A] text-white break-words shadow-sm"
+        : "max-w-[85%] rounded-2xl rounded-tl-sm px-3 py-1.5 bg-white text-slate-800 border border-slate-200 break-words shadow-sm";
+      bubble.textContent = text;
+
+      wrapper.appendChild(meta);
+      wrapper.appendChild(bubble);
+      listEl.appendChild(wrapper);
+      listEl.scrollTop = listEl.scrollHeight;
+    }
+
+    function clearChatBox(listId, emptyId, emptyText) {
+      const listEl = document.getElementById(listId);
+      if (!listEl) return;
+      listEl.replaceChildren();
+      const p = document.createElement("p");
+      p.id = emptyId;
+      p.className = listId === "adminChatMessages" ? "text-slate-400 text-center py-14" : "text-slate-400 text-center py-8";
+      p.textContent = emptyText;
+      listEl.appendChild(p);
+    }
+
+    function updateAdminUnreadBadge() {
+      const badge = document.getElementById("adminChatUnreadBadge");
+      if (!badge) return;
+      if (adminUnreadCount > 0) {
+        badge.textContent = String(adminUnreadCount);
+        badge.classList.remove("hidden");
+      } else {
+        badge.classList.add("hidden");
+      }
+    }
+
+    function toggleAdminChat(forceState) {
+      const box = document.getElementById("adminChatBox");
+      isAdminChatOpen = typeof forceState === "boolean" ? forceState : !isAdminChatOpen;
+      if (isAdminChatOpen) {
+        box.classList.remove("hidden");
+        box.classList.add("flex");
+        adminUnreadCount = 0;
+        updateAdminUnreadBadge();
+        setTimeout(() => document.getElementById("adminChatInput").focus(), 30);
+      } else {
+        box.classList.add("hidden");
+        box.classList.remove("flex");
+      }
+    }
+
+    function sendAdminChatMessage() {
+      if (!dataConn || !dataConn.open) {
+        showToast("กรุณาเชื่อมต่อกับเครื่องปลายทางก่อนส่งแชท", "warning");
+        return;
+      }
+      const input = document.getElementById("adminChatInput");
+      const text = input.value.trim();
+      if (!text) return;
+      sendControlEvent({ type: "chat_text", text, sender: "admin" });
+      appendChatMessage("adminChatMessages", "adminChatEmptyMsg", "ฉัน (ผู้ช่วยเหลือ)", text, true);
+      input.value = "";
+    }
+
+    function sendHostChatMessage() {
+      if (!dataConn || !dataConn.open) {
+        showToast("ยังไม่มีผู้ช่วยเหลือเชื่อมต่ออยู่", "warning");
+        return;
+      }
+      const input = document.getElementById("hostChatInput");
+      const text = input.value.trim();
+      if (!text) return;
+      dataConn.send(JSON.stringify({ type: "chat_text", text, sender: "host" }));
+      appendChatMessage("hostChatMessages", "hostChatEmptyMsg", "ฉัน", text, true);
+      input.value = "";
+    }
+
+    // ป้องกันการพิมพ์/คลิกในกล่องแชทลอยไหลไปสั่งงานเครื่องปลายทาง
+    const adminChatWidgetEl = document.getElementById("adminChatWidget");
+    for (const evtName of ["mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup", "touchstart", "touchmove", "touchend"]) {
+      adminChatWidgetEl.addEventListener(evtName, (e) => e.stopPropagation());
+    }
+
+    document.getElementById("adminChatInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        sendAdminChatMessage();
+      }
+    });
+
+    document.getElementById("hostChatInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        sendHostChatMessage();
+      }
+    });
 
     function arrayBufferToBase64(buffer) {
       const bytes = new Uint8Array(buffer);
