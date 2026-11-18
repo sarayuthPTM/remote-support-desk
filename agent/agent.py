@@ -32,7 +32,7 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.6.0"
+AGENT_VERSION = "2.6.1"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
@@ -408,62 +408,76 @@ def _create_shortcut_ascii_then_copy(target_exe: str, shortcut_path: str) -> tup
         shutil.rmtree(ascii_stage, ignore_errors=True)
 
 
+_SHORTCUT_LOCK = threading.Lock()
+
+
 def install_desktop_shortcut() -> tuple[bool, str]:
     """Install RemoteAgent.exe into C:\\ProgramData\\AnySupport (or %LOCALAPPDATA%) and create Desktop icon."""
-    try:
-        # Prefer pure-ASCII C:\ProgramData\AnySupport when running as Admin so WScript.Shell + all users work
-        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
-        local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        candidate_dirs = (
-            [os.path.join(program_data, "AnySupport"), os.path.join(local_app, "AnySupport")]
-            if is_admin()
-            else [os.path.join(local_app, "AnySupport")]
-        )
+    with _SHORTCUT_LOCK:
+        try:
+            # Prefer pure-ASCII C:\ProgramData\AnySupport when running as Admin so WScript.Shell + all users work
+            program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+            local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            candidate_dirs = (
+                [os.path.join(program_data, "AnySupport"), os.path.join(local_app, "AnySupport")]
+                if is_admin()
+                else [os.path.join(local_app, "AnySupport")]
+            )
 
-        install_dir = ""
-        for d in candidate_dirs:
-            try:
-                os.makedirs(d, exist_ok=True)
-                if d.isascii():
-                    install_dir = d
-                    break
-            except Exception:
-                continue
+            install_dir = ""
+            for d in candidate_dirs:
+                try:
+                    os.makedirs(d, exist_ok=True)
+                    if d.isascii():
+                        install_dir = d
+                        break
+                except Exception:
+                    continue
 
-        if not install_dir:
-            install_dir = os.path.join(local_app, "AnySupport")
-            os.makedirs(install_dir, exist_ok=True)
+            if not install_dir:
+                install_dir = os.path.join(local_app, "AnySupport")
+                os.makedirs(install_dir, exist_ok=True)
 
-        target_exe = os.path.join(install_dir, "RemoteAgent.exe")
-        if getattr(sys, "frozen", False):
-            current_exe = os.path.abspath(sys.executable)
-            if current_exe.lower() != os.path.abspath(target_exe).lower():
-                shutil.copy2(current_exe, target_exe)
-        else:
-            dev_exe = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "RemoteAgent.exe"))
-            if not os.path.isfile(dev_exe):
-                return False, "ไม่พบไฟล์ RemoteAgent.exe สำหรับสร้างทางลัด"
-            shutil.copy2(dev_exe, target_exe)
+            target_exe = os.path.join(install_dir, "RemoteAgent.exe")
+            if getattr(sys, "frozen", False):
+                src_exe = os.path.abspath(sys.executable)
+            else:
+                src_exe = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "RemoteAgent.exe"))
+                if not os.path.isfile(src_exe):
+                    return False, "ไม่พบไฟล์ RemoteAgent.exe สำหรับสร้างทางลัด"
 
-        # Prefer Public Desktop when Admin (bypasses OneDrive sync errors and shows on all user Desktops)
-        dest_dirs: list[str] = []
-        if is_admin():
-            pub_desktop = get_desktop_dir(public=True)
-            if os.path.isdir(pub_desktop):
-                dest_dirs.append(pub_desktop)
-        user_desktop = get_desktop_dir(public=False)
-        if os.path.isdir(user_desktop):
-            dest_dirs.append(user_desktop)
+            if src_exe.lower() != os.path.abspath(target_exe).lower():
+                same_size = (
+                    os.path.isfile(target_exe)
+                    and os.path.getsize(target_exe) == os.path.getsize(src_exe)
+                )
+                if not same_size:
+                    try:
+                        shutil.copy2(src_exe, target_exe)
+                    except OSError as copy_err:
+                        # If target_exe already exists and is currently running/locked (WinError 32), keep using it
+                        if not os.path.isfile(target_exe):
+                            return False, str(copy_err)
 
-        for desktop_dir in dest_dirs:
-            shortcut_path = os.path.join(desktop_dir, "AnySupport ช่วยเหลือระยะไกล.lnk")
-            ok, msg = _create_shortcut_ascii_then_copy(target_exe, shortcut_path)
-            if ok:
-                return True, shortcut_path
+            # Prefer Public Desktop when Admin (bypasses OneDrive sync errors and shows on all user Desktops)
+            dest_dirs: list[str] = []
+            if is_admin():
+                pub_desktop = get_desktop_dir(public=True)
+                if os.path.isdir(pub_desktop):
+                    dest_dirs.append(pub_desktop)
+            user_desktop = get_desktop_dir(public=False)
+            if os.path.isdir(user_desktop):
+                dest_dirs.append(user_desktop)
 
-        return False, "ไม่สามารถเขียนทางลัดลง Desktop ได้"
-    except Exception as exc:
-        return False, str(exc)
+            for desktop_dir in dest_dirs:
+                shortcut_path = os.path.join(desktop_dir, "AnySupport ช่วยเหลือระยะไกล.lnk")
+                ok, msg = _create_shortcut_ascii_then_copy(target_exe, shortcut_path)
+                if ok:
+                    return True, shortcut_path
+
+            return False, "ไม่สามารถเขียนทางลัดลง Desktop ได้"
+        except Exception as exc:
+            return False, str(exc)
 
 
 def open_web_portal() -> None:
@@ -1631,14 +1645,6 @@ class RemoteAgentApp:
         root.configure(bg="#F8FAFC")
         root.resizable(False, False)
 
-        # Center mini control card on screen
-        win_w, win_h = 390, 305
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        pos_x = max(0, (screen_w - win_w) // 2)
-        pos_y = max(0, (screen_h - win_h) // 2)
-        root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
-
         self._tk_icon = ImageTk.PhotoImage(self._icon_cache["waiting"])
         root.iconphoto(True, self._tk_icon)
         root.protocol("WM_DELETE_WINDOW", self._shutdown_all)
@@ -1770,6 +1776,17 @@ class RemoteAgentApp:
             cursor="hand2",
             pady=6,
         ).pack(fill="x")
+
+        # Measure real DPI-scaled size after packing so no button is ever clipped
+        root.update_idletasks()
+        win_w = max(410, root.winfo_reqwidth() + 12)
+        win_h = root.winfo_reqheight() + 8
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        pos_x = max(0, (screen_w - win_w) // 2)
+        pos_y = max(0, (screen_h - win_h) // 2)
+        root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
+        root.minsize(win_w, win_h)
 
         return root
 
