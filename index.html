@@ -227,6 +227,7 @@
           </button>
           <span id="adminConnStatus" class="text-xs text-slate-500 ml-1 font-medium">พร้อมเชื่อมต่อ</span>
           <span id="adminIceBadge" class="hidden text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200"></span>
+          <span id="adminHostAgentBadge" class="hidden text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200"></span>
         </div>
 
         <!-- เครื่องมือควบคุมหน้าจอ / วาดจอ / ไมค์ / คุณภาพ / แคปภาพ -->
@@ -774,6 +775,31 @@
     let agentOfflineTimer = null;
     let lastAgentState = "init";
     let hasWarnedOldAgent = false;
+    let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "" };
+
+    function sendHostAgentStatusToAdmin() {
+      if (dataConn && dataConn.open) {
+        dataConn.send(JSON.stringify({ type: "host_agent_status", ...lastAgentInfo }));
+      }
+    }
+
+    function updateAdminHostAgentBadge(info) {
+      const badge = document.getElementById("adminHostAgentBadge");
+      if (!badge) return;
+      badge.classList.remove("hidden");
+      if (!info || !info.online) {
+        badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
+        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
+      } else if (info.paused) {
+        badge.textContent = "⏸ ปลายทางหยุดควบคุมชั่วคราว";
+        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
+      } else {
+        const ver = info.version ? ` v${info.version}` : "";
+        const role = info.isAdmin ? " Admin" : "";
+        badge.textContent = `🖱️ ปลายทางพร้อมคุม (${ver}${role})`.replace("( ", "(");
+        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+      }
+    }
 
     function updateAgentBadge(state, detail = "") {
       const badge = document.getElementById("agentStatusBadge");
@@ -799,6 +825,8 @@
         agentOfflineTimer = null;
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
         lastAgentState = "offline";
+        lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "" };
+        sendHostAgentStatusToAdmin();
         badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200 whitespace-nowrap truncate";
         badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe";
         document.getElementById("agentUpdateBanner").classList.add("hidden");
@@ -869,6 +897,14 @@
           const msg = safeParseMessage(event.data);
           if (!msg) return;
           if (msg.type === "agent_status") {
+            lastAgentInfo = {
+              online: true,
+              paused: Boolean(msg.paused),
+              isAdmin: Boolean(msg.isAdmin),
+              armed: Boolean(msg.armed),
+              version: String(msg.version || "")
+            };
+            sendHostAgentStatusToAdmin();
             if (msg.paused) {
               updateAgentBadge("paused");
             } else {
@@ -1140,6 +1176,8 @@
         } else {
           localAgentWs.send(JSON.stringify({ type: "ping" }));
         }
+      } else {
+        sendHostAgentStatusToAdmin();
       }
 
       conn.on("data", (rawMsg) => {
@@ -1208,6 +1246,10 @@
 
         // ส่งคำสั่งเมาส์ คีย์บอร์ด หรือคำสั่งด่วน ไปให้ RemoteAgent.exe
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+          if (lastAgentInfo.online && !lastAgentInfo.armed) {
+            lastAgentInfo.armed = true;
+            localAgentWs.send(JSON.stringify({ type: "session_state", active: true }));
+          }
           localAgentWs.send(JSON.stringify(parsed));
         }
       });
@@ -1355,6 +1397,13 @@
         conn.on("data", (rawMsg) => {
           const parsed = safeParseMessage(rawMsg);
           if (!parsed) return;
+          if (parsed.type === "host_agent_status") {
+            updateAdminHostAgentBadge(parsed);
+            if (!parsed.online) {
+              showToast("⚠️ เครื่องปลายทางยังไม่ได้เปิด RemoteAgent.exe จึงดูหน้าจอได้อย่างเดียว", "warning");
+            }
+            return;
+          }
           if (parsed.type === "monitors_info" && Array.isArray(parsed.monitors)) {
             const wrap = document.getElementById("adminMonitorWrap");
             const sel = document.getElementById("adminMonitorSelect");
@@ -1526,6 +1575,7 @@
       updateAdminUnreadBadge();
       clearChatBox("adminChatMessages", "adminChatEmptyMsg", "เริ่มพิมพ์ข้อความเพื่อพูดคุยกัน...");
       document.getElementById("adminIceBadge").classList.add("hidden");
+      document.getElementById("adminHostAgentBadge").classList.add("hidden");
       const monWrap = document.getElementById("adminMonitorWrap");
       monWrap.classList.add("hidden");
       monWrap.classList.remove("flex");
