@@ -88,22 +88,13 @@
       <!-- การ์ดซ้าย: รหัส 6 หลัก และการตั้งค่า -->
       <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
         <div>
-          <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
-            <span class="text-xs font-semibold px-2.5 py-1 rounded-md bg-blue-50 text-[#1E3A8A] border border-blue-200">
+          <div class="flex items-center justify-between gap-2 mb-4 min-h-[30px]">
+            <span class="text-xs font-semibold px-2.5 py-1 rounded-md bg-blue-50 text-[#1E3A8A] border border-blue-200 whitespace-nowrap shrink-0">
               ผู้ขอความช่วยเหลือ
             </span>
-            <span id="agentStatusBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200">
-              ● กำลังตรวจสอบ RemoteAgent.exe...
+            <span id="agentStatusBadge" class="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 whitespace-nowrap truncate">
+              ⏳ กำลังตรวจสอบ Agent...
             </span>
-          </div>
-
-          <div id="agentUpdateBanner" class="hidden mb-3 p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-900">
-            <span class="font-bold">⚠️ พบ RemoteAgent รุ่นเก่า:</span> กรุณาดาวน์โหลดรุ่นใหม่ (<span id="agentTargetVerText">v2.4.0</span>) เพื่อความปลอดภัยสูงสุด กล้องลอย 2 จอ และแชร์ Clipboard
-          </div>
-
-          <div id="hostMonitorRow" class="hidden mb-3 flex items-center justify-between gap-2 p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs">
-            <span class="font-semibold text-[#1E3A8A]">🖥️ จอที่ควบคุม:</span>
-            <select id="hostMonitorSelect" onchange="selectHostMonitor(this.value)" class="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:border-[#1E3A8A]"></select>
           </div>
 
           <h2 class="text-xl font-bold text-slate-900 mb-1">รหัสประจำเครื่องของคุณ</h2>
@@ -115,6 +106,11 @@
               ------
             </div>
             <p id="hostStatusText" class="text-xs text-slate-500 mt-2">ยังไม่ได้เริ่มสร้างห้อง</p>
+          </div>
+
+          <div id="hostMonitorRow" class="hidden mb-3 flex items-center justify-between gap-2 p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs">
+            <span class="font-semibold text-[#1E3A8A]">🖥️ จอที่ควบคุม:</span>
+            <select id="hostMonitorSelect" onchange="selectHostMonitor(this.value)" class="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:border-[#1E3A8A]"></select>
           </div>
 
           <!-- ตัวเลือกความปลอดภัย -->
@@ -133,9 +129,14 @@
                 <span>📦 แบบ .ZIP</span>
               </a>
             </div>
-            <p class="text-[11px] text-slate-500 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
-              💡 หาก Chrome บล็อกการโหลด: กด <strong>Ctrl+J</strong> → กด <strong>⋮</strong> → เลือก <strong>"ดาวน์โหลดไฟล์ที่น่าสงสัย"</strong> (หรือโหลดแบบ <strong>.ZIP</strong> แล้วแตกไฟล์)
-            </p>
+            <div class="min-h-[46px] flex items-center">
+              <p id="downloadTipBox" class="w-full text-[11px] text-slate-500 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                💡 หาก Chrome บล็อกการโหลด: กด <strong>Ctrl+J</strong> → กด <strong>⋮</strong> → เลือก <strong>"ดาวน์โหลดไฟล์ที่น่าสงสัย"</strong> (หรือโหลดแบบ <strong>.ZIP</strong> แล้วแตกไฟล์)
+              </p>
+              <div id="agentUpdateBanner" class="hidden w-full p-2 rounded-lg bg-amber-50 border border-amber-300 text-[11px] leading-snug text-amber-900">
+                <span class="font-bold">⚠️ RemoteAgent รุ่นเก่า (<span id="agentTargetVerText">v2.4.0</span>):</span> กรุณาปิดตัวเก่าแล้วโหลดตัวใหม่ด้านบนเพื่อความเสถียรและปลอดภัยสูงสุด
+              </div>
+            </div>
 
             <button id="startHostBtn" onclick="startHostSession()" class="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 font-bold shadow-sm transition flex items-center justify-center gap-2 text-sm">
               <span>เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก</span>
@@ -698,18 +699,40 @@
     // -----------------------------------------------------------------------
     // 2. เชื่อมต่อโปรแกรม RemoteAgent.exe ในเครื่อง (127.0.0.1:8765)
     // -----------------------------------------------------------------------
+    let agentOfflineTimer = null;
+    let lastAgentState = "init";
+    let hasWarnedOldAgent = false;
+
     function updateAgentBadge(state, detail = "") {
       const badge = document.getElementById("agentStatusBadge");
-      if (state === "ready") {
-        badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300";
-        badge.textContent = `● พร้อมควบคุมเมาส์และคีย์บอร์ด${detail}`;
-      } else if (state === "paused") {
-        badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-300";
-        badge.textContent = "⏸ หยุดควบคุมชั่วคราว (จาก System Tray)";
-      } else {
-        badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200";
-        badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
+      if (state === "ready" || state === "paused") {
+        if (agentOfflineTimer) {
+          clearTimeout(agentOfflineTimer);
+          agentOfflineTimer = null;
+        }
+        lastAgentState = state;
+        if (state === "ready") {
+          badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300 whitespace-nowrap truncate";
+          badge.textContent = `● พร้อมควบคุมเครื่อง${detail}`;
+        } else {
+          badge.className = "text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-300 whitespace-nowrap truncate";
+          badge.textContent = "⏸ หยุดควบคุมชั่วคราว";
+        }
+        return;
       }
+
+      const delay = lastAgentState === "init" ? 400 : 1800;
+      if (agentOfflineTimer) return;
+      agentOfflineTimer = setTimeout(() => {
+        agentOfflineTimer = null;
+        if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
+        lastAgentState = "offline";
+        badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200 whitespace-nowrap truncate";
+        badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe";
+        document.getElementById("agentUpdateBanner").classList.add("hidden");
+        document.getElementById("downloadTipBox").classList.remove("hidden");
+        document.getElementById("hostMonitorRow").classList.add("hidden");
+      }, delay);
     }
 
     function compareSemver(a, b) {
@@ -782,11 +805,18 @@
             }
 
             const banner = document.getElementById("agentUpdateBanner");
+            const tipBox = document.getElementById("downloadTipBox");
             if (msg.version && compareSemver(msg.version, REQUIRED_AGENT_VERSION) < 0) {
-              document.getElementById("agentTargetVerText").textContent = `v${REQUIRED_AGENT_VERSION} (ปัจจุบัน v${msg.version})`;
+              document.getElementById("agentTargetVerText").textContent = `ปัจจุบัน v${msg.version} → ใหม่ v${REQUIRED_AGENT_VERSION}`;
               banner.classList.remove("hidden");
+              tipBox.classList.add("hidden");
+              if (!hasWarnedOldAgent) {
+                hasWarnedOldAgent = true;
+                showToast(`พบ RemoteAgent รุ่นเก่า (v${msg.version}) แนะนำให้ปิดแล้วเปิดรุ่น v${REQUIRED_AGENT_VERSION}`, "warning");
+              }
             } else {
               banner.classList.add("hidden");
+              tipBox.classList.remove("hidden");
             }
 
             if (Array.isArray(msg.monitors) && msg.monitors.length > 0) {
@@ -824,8 +854,6 @@
           if (localAgentWs !== ws) return;
           localAgentWs = null;
           updateAgentBadge("offline");
-          document.getElementById("agentUpdateBanner").classList.add("hidden");
-          document.getElementById("hostMonitorRow").classList.add("hidden");
         };
       } catch {
         updateAgentBadge("offline");
@@ -837,7 +865,7 @@
       if (currentMode === "host") {
         connectLocalAgent();
       }
-    }, 4000);
+    }, 2500);
 
     // -----------------------------------------------------------------------
     // 3. ฝั่ง HOST: เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก
