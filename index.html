@@ -504,7 +504,7 @@
   <script>
     const PEER_PREFIX = "anysupport-th-v2-";
     const AGENT_WS_URL = "ws://127.0.0.1:8765";
-    const REQUIRED_AGENT_VERSION = "2.6.1";
+    const REQUIRED_AGENT_VERSION = "2.7.0";
     const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
     const FILE_CHUNK_SIZE = 48 * 1024; // 48 KB raw bytes per chunk
     const TURN_STORAGE_KEY = "anysupport_custom_turn_v1";
@@ -2307,6 +2307,9 @@
       if (!text) return;
       dataConn.send(JSON.stringify({ type: "chat_text", text, sender: "host" }));
       appendChatMessage("hostChatMessages", "hostChatEmptyMsg", "ฉัน", text, true);
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({ type: "chat_self_echo", text }));
+      }
       input.value = "";
     }
 

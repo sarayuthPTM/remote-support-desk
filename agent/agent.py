@@ -19,7 +19,9 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 import tkinter as tk
+import tkinter.font as tkfont
 from typing import Any
 import webbrowser
 import winsound
@@ -32,7 +34,7 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.6.1"
+AGENT_VERSION = "2.7.0"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
@@ -944,10 +946,12 @@ class RemoteAgentApp:
         self._cam_resize_start = (0, 0, 280, 224)
         self._cam_size = (280, 224)
         self._chat_win: tk.Toplevel | None = None
-        self._chat_msg_lbl: tk.Label | None = None
-        self._chat_sender_lbl: tk.Label | None = None
+        self._chat_canvas: tk.Canvas | None = None
         self._chat_reply_entry: tk.Entry | None = None
-        self._chat_hide_after_id: str | None = None
+        self._chat_status_lbl: tk.Label | None = None
+        self._chat_placeholder_active: bool = True
+        self._chat_drag_offset = (0, 0)
+        self._chat_history: list[dict[str, Any]] = []
         self._chat_latest_text: str = ""
         self._icon_cache = {
             "waiting": create_tray_icon_image("waiting"),
@@ -1122,7 +1126,15 @@ class RemoteAgentApp:
                     text = str(msg.get("text", "")).strip()
                     sender = str(msg.get("sender", "ผู้ช่วยเหลือ")).strip() or "ผู้ช่วยเหลือ"
                     if text:
-                        self._schedule_chat_toast(sender, text)
+                        self._schedule_chat_toast(sender, text, is_self=False)
+                    continue
+
+                if msg_type == "chat_self_echo":
+                    if ws not in self.armed_clients or not await self._ensure_origin_authorized(ws, origin):
+                        continue
+                    text = str(msg.get("text", "")).strip()
+                    if text:
+                        self._schedule_chat_toast("ฉัน (ผู้ขอความช่วยเหลือ)", text, is_self=True)
                     continue
 
                 if self.paused or ws not in self.armed_clients:
@@ -1449,192 +1461,421 @@ class RemoteAgentApp:
         except Exception:
             pass
 
-    def _schedule_chat_toast(self, sender: str, text: str) -> None:
+    @staticmethod
+    def _apply_rounded_window(win: tk.Toplevel) -> None:
+        """Enable native rounded corners on Windows 11 when supported."""
+        try:
+            win.update_idletasks()
+            hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
+            dwmapi = ctypes.WinDLL("dwmapi")
+            preference = ctypes.c_int(2)  # DWMWCP_ROUND
+            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(preference), ctypes.sizeof(preference))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _draw_rounded_rect(
+        canvas: tk.Canvas,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        radius: float = 12,
+        **kwargs: Any,
+    ) -> int:
+        r = max(2.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+        pts = [
+            x1 + r, y1,
+            x1 + r, y1,
+            x2 - r, y1,
+            x2 - r, y1,
+            x2, y1,
+            x2, y1 + r,
+            x2, y1 + r,
+            x2, y2 - r,
+            x2, y2 - r,
+            x2, y2,
+            x2 - r, y2,
+            x2 - r, y2,
+            x1 + r, y2,
+            x1 + r, y2,
+            x1, y2,
+            x1, y2 - r,
+            x1, y2 - r,
+            x1, y1 + r,
+            x1, y1 + r,
+            x1, y1,
+        ]
+        return canvas.create_polygon(pts, smooth=True, splinesteps=18, **kwargs)
+
+    def _schedule_chat_toast(self, sender: str, text: str, is_self: bool = False) -> None:
         if not self.root or self._closing:
             return
         try:
-            self.root.after(0, lambda: self._show_chat_toast(sender, text))
+            self.root.after(0, lambda: self._show_chat_toast(sender, text, is_self=is_self))
         except Exception:
             pass
 
     def _dismiss_chat_toast(self) -> None:
-        if self._chat_hide_after_id and self.root:
-            try:
-                self.root.after_cancel(self._chat_hide_after_id)
-            except Exception:
-                pass
-            self._chat_hide_after_id = None
         if self._chat_win and self._chat_win.winfo_exists():
             self._chat_win.withdraw()
 
+    def _open_chat_window(self) -> None:
+        if not self.root or self._closing:
+            return
+        self.root.after(0, self._present_chat_window)
+
+    def _present_chat_window(self) -> None:
+        win = self._ensure_chat_window()
+        if not win:
+            return
+        self._render_chat_history()
+        win.deiconify()
+        win.attributes("-topmost", True)
+        win.lift()
+        if self._chat_reply_entry:
+            self._chat_reply_entry.focus_set()
+
+    def _on_chat_entry_focus_in(self, _event: tk.Event | None = None) -> None:
+        if self._chat_reply_entry and self._chat_placeholder_active:
+            self._chat_placeholder_active = False
+            self._chat_reply_entry.delete(0, tk.END)
+            self._chat_reply_entry.config(fg="#0F172A")
+
+    def _on_chat_entry_focus_out(self, _event: tk.Event | None = None) -> None:
+        if self._chat_reply_entry and not self._chat_reply_entry.get().strip():
+            self._chat_placeholder_active = True
+            self._chat_reply_entry.delete(0, tk.END)
+            self._chat_reply_entry.insert(0, "พิมพ์ข้อความพูดคุย...")
+            self._chat_reply_entry.config(fg="#94A3B8")
+
     def _send_chat_reply_from_toast(self, event: tk.Event | None = None) -> None:
-        if not self._chat_reply_entry:
+        if not self._chat_reply_entry or self._chat_placeholder_active:
             return
         reply = self._chat_reply_entry.get().strip()
         if not reply:
             return
         self._chat_reply_entry.delete(0, tk.END)
+        self._chat_history.append({
+            "sender": "ฉัน (ผู้ขอความช่วยเหลือ)",
+            "text": reply,
+            "time": datetime.now().strftime("%H:%M"),
+            "is_self": True,
+        })
+        if len(self._chat_history) > 200:
+            self._chat_history = self._chat_history[-200:]
+        self._render_chat_history()
+
         if self.loop and self.armed_clients:
             payload = json.dumps({"type": "host_chat_reply", "text": reply})
             for client_ws in list(self.armed_clients):
                 asyncio.run_coroutine_threadsafe(client_ws.send(payload), self.loop)
-        self._dismiss_chat_toast()
 
-    def _copy_chat_toast_text(self) -> None:
-        if self._chat_latest_text:
-            self.controller.set_clipboard_text(self._chat_latest_text)
+    def _copy_bubble_text(self, text: str) -> None:
+        if not text:
+            return
+        self.controller.set_clipboard_text(text)
+        if self._chat_status_lbl and self._chat_status_lbl.winfo_exists():
+            self._chat_status_lbl.config(text="คัดลอกข้อความแล้ว ✓", fg="#FBBF24")
+            if self.root:
+                self.root.after(
+                    1600,
+                    lambda: (
+                        self._chat_status_lbl.config(text="", fg="#CBD5E1")
+                        if self._chat_status_lbl and self._chat_status_lbl.winfo_exists()
+                        else None
+                    ),
+                )
 
-    def _show_chat_toast(self, sender: str, text: str) -> None:
+    def _render_chat_history(self) -> None:
+        canvas = self._chat_canvas
+        if not canvas or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+
+        cw = max(300, int(canvas.winfo_width() or 334))
+        ch = max(200, int(canvas.winfo_height() or 270))
+
+        if not self._chat_history:
+            canvas.create_text(
+                cw / 2,
+                ch / 2,
+                text="ยังไม่มีข้อความสนทนา...",
+                font=("Segoe UI", 9),
+                fill="#94A3B8",
+            )
+            canvas.configure(scrollregion=(0, 0, cw, ch))
+            return
+
+        meta_font = tkfont.Font(family="Segoe UI", size=8)
+        msg_font = tkfont.Font(family="Segoe UI", size=10)
+        pad_x = 14
+        max_bubble_text_w = cw - 84
+        y = 12
+
+        for idx, item in enumerate(self._chat_history):
+            is_self = bool(item.get("is_self"))
+            sender = str(item.get("sender", "ผู้ช่วยเหลือ"))
+            ts = str(item.get("time", ""))
+            text = str(item.get("text", ""))
+            meta_txt = f"{sender} • {ts}" if ts else sender
+
+            if is_self:
+                canvas.create_text(
+                    cw - pad_x,
+                    y,
+                    text=meta_txt,
+                    font=meta_font,
+                    fill="#64748B",
+                    anchor="ne",
+                )
+            else:
+                canvas.create_text(
+                    pad_x,
+                    y,
+                    text=meta_txt,
+                    font=meta_font,
+                    fill="#64748B",
+                    anchor="nw",
+                )
+            y += 18
+
+            tag = f"msg_{idx}"
+            text_id = canvas.create_text(
+                0,
+                0,
+                text=text,
+                font=msg_font,
+                fill="#FFFFFF" if is_self else "#0F172A",
+                width=max_bubble_text_w,
+                anchor="nw",
+                tags=(tag,),
+            )
+            bbox = canvas.bbox(text_id)
+            tw = max(20, (bbox[2] - bbox[0]) if bbox else 40)
+            th = max(18, (bbox[3] - bbox[1]) if bbox else 20)
+
+            bx_pad = 12
+            by_pad = 8
+            bw = tw + bx_pad * 2
+            bh = th + by_pad * 2
+
+            if is_self:
+                bx1 = cw - pad_x - bw
+                bx2 = cw - pad_x
+                fill_color = "#1E3A8A"
+                outline_color = "#1E3A8A"
+            else:
+                bx1 = pad_x
+                bx2 = pad_x + bw
+                fill_color = "#FFFFFF"
+                outline_color = "#E2E8F0"
+
+            by1 = y
+            by2 = y + bh
+            canvas.coords(text_id, bx1 + bx_pad, by1 + by_pad)
+
+            bubble_id = self._draw_rounded_rect(
+                canvas,
+                bx1,
+                by1,
+                bx2,
+                by2,
+                radius=13,
+                fill=fill_color,
+                outline=outline_color,
+                width=1,
+                tags=(tag,),
+            )
+            canvas.tag_lower(bubble_id, text_id)
+            canvas.tag_bind(tag, "<Button-1>", lambda _e, t=text: self._copy_bubble_text(t))
+            y = by2 + 12
+
+        total_h = max(ch, y + 6)
+        canvas.configure(scrollregion=(0, 0, cw, total_h))
+        canvas.yview_moveto(1.0)
+
+    def _ensure_chat_window(self) -> tk.Toplevel | None:
+        if not self.root or self._closing:
+            return None
+        if self._chat_win and self._chat_win.winfo_exists():
+            return self._chat_win
+
+        win = tk.Toplevel(self.root)
+        win.title("แชทพูดคุยกับผู้ช่วยเหลือ")
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg="#FFFFFF")
+
+        outer = tk.Frame(win, bg="#FFFFFF", highlightbackground="#CBD5E1", highlightthickness=1)
+        outer.pack(fill="both", expand=True)
+
+        # Header (#1E3A8A) matching web floating chat card
+        bar = tk.Frame(outer, bg="#1E3A8A", padx=14, pady=10, cursor="fleur")
+        bar.pack(fill="x")
+
+        title_lbl = tk.Label(
+            bar,
+            text="💬  แชทพูดคุยกับผู้ช่วยเหลือ",
+            font=("Segoe UI", 10, "bold"),
+            fg="#FFFFFF",
+            bg="#1E3A8A",
+            cursor="fleur",
+        )
+        title_lbl.pack(side="left")
+
+        status_lbl = tk.Label(
+            bar,
+            text="",
+            font=("Segoe UI", 8, "bold"),
+            fg="#FBBF24",
+            bg="#1E3A8A",
+            cursor="fleur",
+        )
+        status_lbl.pack(side="left", padx=(8, 0))
+
+        min_btn = tk.Button(
+            bar,
+            text="—",
+            command=self._dismiss_chat_toast,
+            font=("Segoe UI", 10, "bold"),
+            fg="#FFFFFF",
+            bg="#1E3A8A",
+            activebackground="#172554",
+            activeforeground="#FBBF24",
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=6,
+        )
+        min_btn.pack(side="right")
+
+        def start_drag(event: tk.Event) -> None:
+            self._chat_drag_offset = (event.x_root - win.winfo_x(), event.y_root - win.winfo_y())
+
+        def on_drag(event: tk.Event) -> None:
+            nx = event.x_root - self._chat_drag_offset[0]
+            ny = event.y_root - self._chat_drag_offset[1]
+            win.geometry(f"+{nx}+{ny}")
+
+        for w in (bar, title_lbl, status_lbl):
+            w.bind("<Button-1>", start_drag)
+            w.bind("<B1-Motion>", on_drag)
+
+        # Scrollable chat history area (#F8FAFC)
+        chat_area = tk.Frame(outer, bg="#F8FAFC")
+        chat_area.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(chat_area, bg="#F8FAFC", highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(chat_area, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 2), pady=4)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def on_wheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind("<MouseWheel>", on_wheel)
+        canvas.bind("<Configure>", lambda _e: self._render_chat_history())
+
+        # Divider + Footer (#FFFFFF) matching Image 1
+        tk.Frame(outer, bg="#E2E8F0", height=1).pack(fill="x")
+
+        footer = tk.Frame(outer, bg="#FFFFFF", padx=12, pady=10)
+        footer.pack(fill="x")
+
+        # Pill-shaped Input Box Canvas
+        input_wrap = tk.Canvas(footer, bg="#FFFFFF", height=38, highlightthickness=0, bd=0)
+        input_wrap.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        entry = tk.Entry(
+            input_wrap,
+            font=("Segoe UI", 9),
+            bg="#FFFFFF",
+            fg="#94A3B8",
+            relief="flat",
+            bd=0,
+            insertbackground="#1E3A8A",
+        )
+        entry.insert(0, "พิมพ์ข้อความพูดคุย...")
+        entry.bind("<FocusIn>", self._on_chat_entry_focus_in)
+        entry.bind("<FocusOut>", self._on_chat_entry_focus_out)
+        entry.bind("<Return>", self._send_chat_reply_from_toast)
+
+        def redraw_input_pill(_e: tk.Event | None = None) -> None:
+            w_px = max(120, input_wrap.winfo_width())
+            input_wrap.delete("all")
+            self._draw_rounded_rect(
+                input_wrap,
+                1,
+                1,
+                w_px - 2,
+                36,
+                radius=17,
+                fill="#FFFFFF",
+                outline="#CBD5E1",
+                width=1,
+            )
+            input_wrap.create_window(14, 19, window=entry, anchor="w", width=max(80, w_px - 28))
+
+        input_wrap.bind("<Configure>", redraw_input_pill)
+
+        # Pill-shaped Navy Send Button
+        send_canvas = tk.Canvas(footer, bg="#FFFFFF", width=66, height=38, highlightthickness=0, bd=0, cursor="hand2")
+        send_canvas.pack(side="right")
+
+        def draw_send_btn(bg_col: str = "#1E3A8A") -> None:
+            send_canvas.delete("all")
+            self._draw_rounded_rect(send_canvas, 1, 1, 64, 36, radius=17, fill=bg_col, outline=bg_col)
+            send_canvas.create_text(33, 19, text="ส่ง", font=("Segoe UI", 9, "bold"), fill="#FFFFFF")
+
+        draw_send_btn()
+        send_canvas.bind("<Enter>", lambda _e: draw_send_btn("#1D4ED8"))
+        send_canvas.bind("<Leave>", lambda _e: draw_send_btn("#1E3A8A"))
+        send_canvas.bind("<Button-1>", self._send_chat_reply_from_toast)
+
+        w, h = 356, 410
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        win.geometry(f"{w}x{h}+{max(0, sw - w - 18)}+{max(0, sh - h - 56)}")
+        self._apply_rounded_window(win)
+
+        self._chat_win = win
+        self._chat_canvas = canvas
+        self._chat_reply_entry = entry
+        self._chat_status_lbl = status_lbl
+        return win
+
+    def _show_chat_toast(self, sender: str, text: str, is_self: bool = False) -> None:
         if not self.root or self._closing:
             return
         self._chat_latest_text = text
+        self._chat_history.append({
+            "sender": sender,
+            "text": text,
+            "time": datetime.now().strftime("%H:%M"),
+            "is_self": is_self,
+        })
+        if len(self._chat_history) > 200:
+            self._chat_history = self._chat_history[-200:]
+
+        if is_self:
+            if self._chat_win and self._chat_win.winfo_exists() and self._chat_win.state() != "withdrawn":
+                self._render_chat_history()
+            return
 
         try:
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
         except Exception:
             pass
 
-        if not self._chat_win or not self._chat_win.winfo_exists():
-            win = tk.Toplevel(self.root)
-            win.title("AnySupport Chat")
-            win.overrideredirect(True)
-            win.attributes("-topmost", True)
-            win.configure(bg="#1E3A8A")
-
-            bar = tk.Frame(win, bg="#1E3A8A", padx=10, pady=6)
-            bar.pack(fill="x")
-
-            sender_lbl = tk.Label(
-                bar,
-                text=f"💬 ข้อความจาก{sender}",
-                font=("Segoe UI", 9, "bold"),
-                fg="#FBBF24",
-                bg="#1E3A8A",
-            )
-            sender_lbl.pack(side="left")
-
-            tk.Button(
-                bar,
-                text="✕",
-                command=self._dismiss_chat_toast,
-                font=("Segoe UI", 9, "bold"),
-                fg="#FFFFFF",
-                bg="#1E3A8A",
-                activebackground="#DC2626",
-                activeforeground="#FFFFFF",
-                relief="flat",
-                bd=0,
-                cursor="hand2",
-                padx=4,
-            ).pack(side="right")
-
-            body = tk.Frame(win, bg="#FFFFFF", padx=12, pady=10, highlightbackground="#CBD5E1", highlightthickness=1)
-            body.pack(fill="both", expand=True)
-
-            msg_lbl = tk.Label(
-                body,
-                text="",
-                font=("Segoe UI", 10),
-                fg="#0F172A",
-                bg="#FFFFFF",
-                justify="left",
-                anchor="w",
-                wraplength=320,
-            )
-            msg_lbl.pack(fill="x", pady=(0, 8))
-
-            btn_row = tk.Frame(body, bg="#FFFFFF")
-            btn_row.pack(fill="x", pady=(0, 8))
-
-            tk.Button(
-                btn_row,
-                text="📋 คัดลอกข้อความ",
-                command=self._copy_chat_toast_text,
-                font=("Segoe UI", 8, "bold"),
-                bg="#EFF6FF",
-                fg="#1E3A8A",
-                activebackground="#DBEAFE",
-                relief="flat",
-                cursor="hand2",
-                padx=8,
-                pady=3,
-            ).pack(side="left")
-
-            tk.Button(
-                btn_row,
-                text="🌐 เปิดหน้าเว็บ",
-                command=open_web_portal,
-                font=("Segoe UI", 8),
-                bg="#F1F5F9",
-                fg="#334155",
-                activebackground="#E2E8F0",
-                relief="flat",
-                cursor="hand2",
-                padx=8,
-                pady=3,
-            ).pack(side="right")
-
-            reply_row = tk.Frame(body, bg="#FFFFFF")
-            reply_row.pack(fill="x")
-
-            entry = tk.Entry(
-                reply_row,
-                font=("Segoe UI", 9),
-                bg="#F8FAFC",
-                fg="#0F172A",
-                relief="solid",
-                bd=1,
-            )
-            entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(0, 6))
-            entry.bind("<Return>", self._send_chat_reply_from_toast)
-            entry.bind("<FocusIn>", lambda e: self._cancel_chat_autohide())
-
-            tk.Button(
-                reply_row,
-                text="ส่งตอบ",
-                command=self._send_chat_reply_from_toast,
-                font=("Segoe UI", 9, "bold"),
-                bg="#1E3A8A",
-                fg="#FFFFFF",
-                activebackground="#172554",
-                activeforeground="#FFFFFF",
-                relief="flat",
-                cursor="hand2",
-                padx=10,
-                pady=3,
-            ).pack(side="right")
-
-            self._chat_win = win
-            self._chat_sender_lbl = sender_lbl
-            self._chat_msg_lbl = msg_lbl
-            self._chat_reply_entry = entry
-
-        if self._chat_sender_lbl:
-            self._chat_sender_lbl.config(text=f"💬 ข้อความจาก{sender}")
-        if self._chat_msg_lbl:
-            self._chat_msg_lbl.config(text=text)
-
-        win = self._chat_win
-        win.update_idletasks()
-        w = max(356, win.winfo_reqwidth())
-        h = win.winfo_reqheight()
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(f"{w}x{h}+{max(0, sw - w - 16)}+{max(0, sh - h - 56)}")
+        win = self._ensure_chat_window()
+        if not win:
+            return
         win.deiconify()
         win.attributes("-topmost", True)
         win.lift()
-
-        self._cancel_chat_autohide()
-        self._chat_hide_after_id = self.root.after(15000, self._dismiss_chat_toast)
-
-    def _cancel_chat_autohide(self) -> None:
-        if self._chat_hide_after_id and self.root:
-            try:
-                self.root.after_cancel(self._chat_hide_after_id)
-            except Exception:
-                pass
-            self._chat_hide_after_id = None
+        self._render_chat_history()
 
     def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
         self._shutdown_all()
@@ -1752,6 +1993,19 @@ class RemoteAgentApp:
 
         tk.Button(
             body,
+            text="💬  แชทพูดคุยกับผู้ช่วยเหลือ",
+            command=self._present_chat_window,
+            font=("Segoe UI", 9, "bold"),
+            bg="#EFF6FF",
+            fg="#1E3A8A",
+            activebackground="#DBEAFE",
+            relief="flat",
+            cursor="hand2",
+            pady=5,
+        ).pack(fill="x", pady=(0, 6))
+
+        tk.Button(
+            body,
             text="📌  สร้างไอคอนบนหน้าจอ (Desktop)",
             command=self._on_create_shortcut_clicked,
             font=("Segoe UI", 9),
@@ -1845,6 +2099,7 @@ class RemoteAgentApp:
 
         menu = pystray.Menu(
             Item("🔼 แสดงหน้าต่างควบคุม", lambda icon, item: self._show_window(), default=True),
+            Item("💬 เปิดหน้าต่างแชท", lambda icon, item: self._open_chat_window()),
             Item("🌐 เปิดหน้าเว็บ AnySupport Web", self._on_open_web),
             pystray.Menu.SEPARATOR,
             Item(lambda item: f"สถานะ: {self._status_text()}", None, enabled=False),
