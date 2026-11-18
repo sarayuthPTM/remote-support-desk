@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -31,7 +32,7 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.5.0"
+AGENT_VERSION = "2.6.0"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
@@ -364,43 +365,30 @@ def ensure_admin_elevation() -> None:
         sys.exit(0)
 
 
-def get_desktop_dir() -> str:
-    """Resolve the user's real Windows Desktop directory (including OneDrive redirection)."""
+def get_desktop_dir(public: bool = False) -> str:
+    """Resolve Windows Desktop directory (Public Desktop or user's real Desktop)."""
     buf = ctypes.create_unicode_buffer(260)
-    if shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf) == 0 and buf.value:
+    csidl = 0x0019 if public else 0x0010  # CSIDL_COMMON_DESKTOPDIRECTORY / CSIDL_DESKTOPDIRECTORY
+    if shell32.SHGetFolderPathW(None, csidl, None, 0, buf) == 0 and buf.value:
         return buf.value
+    if public:
+        return os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Desktop")
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
-def install_desktop_shortcut() -> tuple[bool, str]:
-    """Install RemoteAgent.exe into %LOCALAPPDATA%\\AnySupport and create a Desktop shortcut."""
+def _create_shortcut_ascii_then_copy(target_exe: str, shortcut_path: str) -> tuple[bool, str]:
+    """Create .lnk in a pure-ASCII temp path (WScript.Shell safe) and copy via Unicode Win32."""
+    ascii_stage = tempfile.mkdtemp(prefix="anysup_")
     try:
-        if getattr(sys, "frozen", False):
-            local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            install_dir = os.path.join(local_app, "AnySupport")
-            os.makedirs(install_dir, exist_ok=True)
-            target_exe = os.path.join(install_dir, "RemoteAgent.exe")
-            current_exe = os.path.abspath(sys.executable)
-            if current_exe.lower() != os.path.abspath(target_exe).lower():
-                shutil.copy2(current_exe, target_exe)
-        else:
-            candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "RemoteAgent.exe"))
-            if not os.path.isfile(candidate):
-                return False, "ไม่พบไฟล์ RemoteAgent.exe สำหรับสร้างทางลัด"
-            target_exe = candidate
-
-        desktop_dir = get_desktop_dir()
-        if not os.path.isdir(desktop_dir):
-            return False, "ไม่พบโฟลเดอร์ Desktop"
-
-        shortcut_path = os.path.join(desktop_dir, "AnySupport ช่วยเหลือระยะไกล.lnk")
+        tmp_lnk = os.path.join(ascii_stage, "AnySupport.lnk")
+        # Ensure TargetPath/WorkingDirectory passed to WScript.Shell contain no non-ASCII chars
         ps_script = (
             "$ws = New-Object -ComObject WScript.Shell; "
-            f"$sc = $ws.CreateShortcut('{shortcut_path.replace(chr(39), chr(39)*2)}'); "
+            f"$sc = $ws.CreateShortcut('{tmp_lnk.replace(chr(39), chr(39)*2)}'); "
             f"$sc.TargetPath = '{target_exe.replace(chr(39), chr(39)*2)}'; "
             f"$sc.WorkingDirectory = '{os.path.dirname(target_exe).replace(chr(39), chr(39)*2)}'; "
             f"$sc.IconLocation = '{target_exe.replace(chr(39), chr(39)*2)},0'; "
-            "$sc.Description = 'AnySupport Web - ระบบช่วยเหลือและซ่อมคอมพิวเตอร์ระยะไกล'; "
+            "$sc.Description = 'AnySupport Web Remote Support Agent'; "
             "$sc.Save()"
         )
         encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
@@ -408,11 +396,72 @@ def install_desktop_shortcut() -> tuple[bool, str]:
             ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             capture_output=True,
             creationflags=0x08000000,  # CREATE_NO_WINDOW
-            timeout=10,
+            timeout=15,
         )
-        if res.returncode == 0 and os.path.isfile(shortcut_path):
-            return True, shortcut_path
-        return False, "สร้างทางลัดไม่สำเร็จ"
+        if res.returncode == 0 and os.path.isfile(tmp_lnk):
+            shutil.copy2(tmp_lnk, shortcut_path)
+            if os.path.isfile(shortcut_path):
+                return True, shortcut_path
+        err_msg = (res.stderr or b"").decode("utf-8", errors="ignore").strip()
+        return False, err_msg or "สร้างทางลัดไม่สำเร็จ"
+    finally:
+        shutil.rmtree(ascii_stage, ignore_errors=True)
+
+
+def install_desktop_shortcut() -> tuple[bool, str]:
+    """Install RemoteAgent.exe into C:\\ProgramData\\AnySupport (or %LOCALAPPDATA%) and create Desktop icon."""
+    try:
+        # Prefer pure-ASCII C:\ProgramData\AnySupport when running as Admin so WScript.Shell + all users work
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        candidate_dirs = (
+            [os.path.join(program_data, "AnySupport"), os.path.join(local_app, "AnySupport")]
+            if is_admin()
+            else [os.path.join(local_app, "AnySupport")]
+        )
+
+        install_dir = ""
+        for d in candidate_dirs:
+            try:
+                os.makedirs(d, exist_ok=True)
+                if d.isascii():
+                    install_dir = d
+                    break
+            except Exception:
+                continue
+
+        if not install_dir:
+            install_dir = os.path.join(local_app, "AnySupport")
+            os.makedirs(install_dir, exist_ok=True)
+
+        target_exe = os.path.join(install_dir, "RemoteAgent.exe")
+        if getattr(sys, "frozen", False):
+            current_exe = os.path.abspath(sys.executable)
+            if current_exe.lower() != os.path.abspath(target_exe).lower():
+                shutil.copy2(current_exe, target_exe)
+        else:
+            dev_exe = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "RemoteAgent.exe"))
+            if not os.path.isfile(dev_exe):
+                return False, "ไม่พบไฟล์ RemoteAgent.exe สำหรับสร้างทางลัด"
+            shutil.copy2(dev_exe, target_exe)
+
+        # Prefer Public Desktop when Admin (bypasses OneDrive sync errors and shows on all user Desktops)
+        dest_dirs: list[str] = []
+        if is_admin():
+            pub_desktop = get_desktop_dir(public=True)
+            if os.path.isdir(pub_desktop):
+                dest_dirs.append(pub_desktop)
+        user_desktop = get_desktop_dir(public=False)
+        if os.path.isdir(user_desktop):
+            dest_dirs.append(user_desktop)
+
+        for desktop_dir in dest_dirs:
+            shortcut_path = os.path.join(desktop_dir, "AnySupport ช่วยเหลือระยะไกล.lnk")
+            ok, msg = _create_shortcut_ascii_then_copy(target_exe, shortcut_path)
+            if ok:
+                return True, shortcut_path
+
+        return False, "ไม่สามารถเขียนทางลัดลง Desktop ได้"
     except Exception as exc:
         return False, str(exc)
 
