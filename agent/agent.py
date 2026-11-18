@@ -30,22 +30,25 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.3.0"
+AGENT_VERSION = "2.4.0"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
 
-# Allowed browser origins by default (localhost, 127.0.0.1, Vercel, GitHub Pages, local file)
+# Strict Origin allowlist (exact production site + local dev only; others require explicit user prompt)
 TRUSTED_ORIGIN_PATTERNS = (
-    re.compile(r"^https?://localhost(:\d+)?$", re.IGNORECASE),
-    re.compile(r"^https?://127\.0\.0\.1(:\d+)?$", re.IGNORECASE),
-    re.compile(r"^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app$", re.IGNORECASE),
-    re.compile(r"^https://[a-z0-9-]+\.github\.io$", re.IGNORECASE),
+    re.compile(r"^https://remote-support-desk-xi\.vercel\.app$", re.IGNORECASE),
+    re.compile(r"^http://localhost(:\d+)?$", re.IGNORECASE),
+    re.compile(r"^http://127\.0\.0\.1(:\d+)?$", re.IGNORECASE),
 )
 
 # Win32 Constants
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
@@ -58,6 +61,7 @@ MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
 MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 MOUSEEVENTF_ABSOLUTE = 0x8000
 
 KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -115,6 +119,34 @@ class HARDWAREINPUT(ctypes.Structure):
     ]
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    ]
+
+
+class MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+        ("szDevice", wintypes.WCHAR * 32),
+    ]
+
+
+MonitorEnumProc = ctypes.WINFUNCTYPE(
+    wintypes.BOOL,
+    wintypes.HMONITOR,
+    wintypes.HDC,
+    ctypes.POINTER(RECT),
+    wintypes.LPARAM,
+)
+
+
 class _INPUT_UNION(ctypes.Union):
     _fields_ = [
         ("mi", MOUSEINPUT),
@@ -141,10 +173,18 @@ user32.OpenClipboard.argtypes = (wintypes.HWND,)
 user32.OpenClipboard.restype = wintypes.BOOL
 user32.EmptyClipboard.argtypes = ()
 user32.EmptyClipboard.restype = wintypes.BOOL
+user32.GetClipboardData.argtypes = (wintypes.UINT,)
+user32.GetClipboardData.restype = wintypes.HANDLE
 user32.SetClipboardData.argtypes = (wintypes.UINT, wintypes.HANDLE)
 user32.SetClipboardData.restype = wintypes.HANDLE
 user32.CloseClipboard.argtypes = ()
 user32.CloseClipboard.restype = wintypes.BOOL
+user32.GetClipboardSequenceNumber.argtypes = ()
+user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+user32.EnumDisplayMonitors.argtypes = (wintypes.HDC, ctypes.POINTER(RECT), MonitorEnumProc, wintypes.LPARAM)
+user32.EnumDisplayMonitors.restype = wintypes.BOOL
+user32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW))
+user32.GetMonitorInfoW.restype = wintypes.BOOL
 user32.MessageBoxW.argtypes = (wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT)
 user32.MessageBoxW.restype = ctypes.c_int
 user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
@@ -406,11 +446,9 @@ def acquire_single_instance() -> wintypes.HANDLE | None:
 
 
 def is_origin_trusted(origin: str | None) -> bool:
-    """Check whether the browser Origin header belongs to a trusted host."""
-    if not origin or origin == "null":
-        return True
-    if origin.lower().startswith("file://"):
-        return True
+    """Check whether the browser Origin header belongs to the explicit allowlist."""
+    if not origin:
+        return False
     extra = os.environ.get("AGENT_ALLOWED_ORIGINS", "")
     if extra:
         allowed_set = {item.strip().lower() for item in extra.split(",") if item.strip()}
@@ -420,12 +458,71 @@ def is_origin_trusted(origin: str | None) -> bool:
 
 
 class Win32InputController:
-    """Thread-safe Win32 SendInput mouse, keyboard, clipboard, and command controller."""
+    """Thread-safe Win32 SendInput mouse, keyboard, multi-monitor, clipboard, and command controller."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pressed_buttons: set[str] = set()
         self._pressed_vks: set[int] = set()
+        self.selected_monitor_index: int = 0
+        self.last_own_clip_seq: int = -1
+        self._select_primary_monitor_default()
+
+    @staticmethod
+    def get_monitors() -> list[dict[str, Any]]:
+        monitors: list[dict[str, Any]] = []
+
+        def callback(hmon: Any, hdc: Any, lprect: Any, lparam: int) -> bool:
+            mi = MONITORINFOEXW()
+            mi.cbSize = ctypes.sizeof(MONITORINFOEXW)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcMonitor
+                monitors.append({
+                    "index": len(monitors),
+                    "name": mi.szDevice,
+                    "left": int(r.left),
+                    "top": int(r.top),
+                    "width": max(1, int(r.right - r.left)),
+                    "height": max(1, int(r.bottom - r.top)),
+                    "primary": bool(mi.dwFlags & 1),
+                })
+            return True
+
+        cb_fn = MonitorEnumProc(callback)
+        user32.EnumDisplayMonitors(None, None, cb_fn, 0)
+        if not monitors:
+            w, h = Win32InputController.get_screen_size()
+            monitors.append({
+                "index": 0,
+                "name": "Primary",
+                "left": 0,
+                "top": 0,
+                "width": w,
+                "height": h,
+                "primary": True,
+            })
+        return monitors
+
+    def _select_primary_monitor_default(self) -> None:
+        for mon in self.get_monitors():
+            if mon["primary"]:
+                self.selected_monitor_index = mon["index"]
+                return
+        self.selected_monitor_index = 0
+
+    def set_monitor(self, index: int) -> int:
+        monitors = self.get_monitors()
+        if 0 <= index < len(monitors):
+            self.selected_monitor_index = index
+        return self.selected_monitor_index
+
+    def match_monitor(self, width: int, height: int) -> int:
+        monitors = self.get_monitors()
+        for mon in monitors:
+            if mon["width"] == width and mon["height"] == height:
+                self.selected_monitor_index = mon["index"]
+                return self.selected_monitor_index
+        return self.selected_monitor_index
 
     @staticmethod
     def get_screen_size() -> tuple[int, int]:
@@ -433,11 +530,24 @@ class Win32InputController:
         height = max(1, int(user32.GetSystemMetrics(SM_CYSCREEN)))
         return width, height
 
-    @staticmethod
-    def _norm_to_abs(x: float, y: float) -> tuple[int, int]:
+    def _norm_to_abs(self, x: float, y: float) -> tuple[int, int]:
         nx = max(0.0, min(1.0, float(x)))
         ny = max(0.0, min(1.0, float(y)))
-        return int(round(nx * 65535)), int(round(ny * 65535))
+        monitors = self.get_monitors()
+        idx = self.selected_monitor_index if 0 <= self.selected_monitor_index < len(monitors) else 0
+        mon = monitors[idx]
+
+        vx = mon["left"] + nx * mon["width"]
+        vy = mon["top"] + ny * mon["height"]
+
+        v_left = int(user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+        v_top = int(user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+        v_width = max(1, int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)))
+        v_height = max(1, int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)))
+
+        abs_x = max(0, min(65535, int(round(((vx - v_left) * 65535) / v_width))))
+        abs_y = max(0, min(65535, int(round(((vy - v_top) * 65535) / v_height))))
+        return abs_x, abs_y
 
     @staticmethod
     def _send_inputs(inputs: list[INPUT]) -> None:
@@ -493,7 +603,9 @@ class Win32InputController:
     def move_mouse(self, x: float, y: float) -> None:
         ax, ay = self._norm_to_abs(x, y)
         with self._lock:
-            self._send_inputs([self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)])
+            self._send_inputs([
+                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)
+            ])
 
     def mouse_button(self, x: float, y: float, button: str, down: bool) -> None:
         ax, ay = self._norm_to_abs(x, y)
@@ -512,17 +624,22 @@ class Win32InputController:
             else:
                 self._pressed_buttons.discard(btn)
             self._send_inputs([
-                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | flag_map[(btn, down)])
+                self._make_mouse(
+                    ax,
+                    ay,
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | flag_map[(btn, down)],
+                )
             ])
 
     def double_click(self, x: float, y: float) -> None:
         ax, ay = self._norm_to_abs(x, y)
+        base = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
         with self._lock:
             self._send_inputs([
-                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
-                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP),
-                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN),
-                self._make_mouse(ax, ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP),
+                self._make_mouse(ax, ay, base | MOUSEEVENTF_LEFTDOWN),
+                self._make_mouse(ax, ay, base | MOUSEEVENTF_LEFTUP),
+                self._make_mouse(ax, ay, base | MOUSEEVENTF_LEFTDOWN),
+                self._make_mouse(ax, ay, base | MOUSEEVENTF_LEFTUP),
             ])
 
     def scroll(self, dy: int) -> None:
@@ -607,8 +724,34 @@ class Win32InputController:
             inputs = [self._make_key(vk, is_up=True, extended=ext) for vk, ext in reversed(resolved)]
             self._send_inputs(inputs)
 
-    def paste_text(self, text: str) -> bool:
-        if not text:
+    def get_clipboard_text(self) -> str | None:
+        opened = False
+        for _ in range(5):
+            if user32.OpenClipboard(None):
+                opened = True
+                break
+            time.sleep(0.015)
+        if not opened:
+            return None
+        try:
+            handle = user32.GetClipboardData(CF_UNICODETEXT)
+            if not handle:
+                return None
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return None
+            try:
+                text = ctypes.wstring_at(ptr)
+                if len(text) > 512_000:
+                    return text[:512_000]
+                return text
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+
+    def set_clipboard_text(self, text: str) -> bool:
+        if not isinstance(text, str) or not text:
             return False
         data = (text + "\0").encode("utf-16-le")
         opened = False
@@ -636,7 +779,12 @@ class Win32InputController:
                 return False
         finally:
             user32.CloseClipboard()
+            self.last_own_clip_seq = int(user32.GetClipboardSequenceNumber())
+        return True
 
+    def paste_text(self, text: str) -> bool:
+        if not self.set_clipboard_text(text):
+            return False
         time.sleep(0.04)
         self.send_hotkey(["ctrl", "v"])
         return True
@@ -710,6 +858,7 @@ class RemoteAgentApp:
         self.controller = Win32InputController()
         self.paused = False
         self.clients: set[ServerConnection] = set()
+        self.armed_clients: set[ServerConnection] = set()
         self.session_approved_origins: set[str] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.stop_event: asyncio.Event | None = None
@@ -748,8 +897,10 @@ class RemoteAgentApp:
         admin_label = "Admin" if is_admin() else "Standard"
         if state == "paused":
             return f"หยุดควบคุมชั่วคราว ({admin_label})"
+        if self.armed_clients:
+            return f"กำลังถูกควบคุมจากระยะไกล ({admin_label})"
         if state == "connected":
-            return f"เชื่อมต่อหน้าเว็บแล้ว ({len(self.clients)} แท็บ, {admin_label})"
+            return f"เชื่อมหน้าเว็บแล้ว • รอผู้ช่วยเหลือ ({admin_label})"
         return f"พร้อมเชื่อมต่อ ws://{HOST}:{PORT} ({admin_label})"
 
     def refresh_tray(self) -> None:
@@ -798,26 +949,32 @@ class RemoteAgentApp:
                 )
 
     async def _send_status(self, ws: ServerConnection) -> None:
-        width, height = self.controller.get_screen_size()
+        monitors = self.controller.get_monitors()
+        idx = self.controller.selected_monitor_index
+        active_mon = monitors[idx] if 0 <= idx < len(monitors) else monitors[0]
         payload = {
             "type": "agent_status",
             "version": AGENT_VERSION,
             "isAdmin": is_admin(),
             "paused": self.paused,
-            "screenWidth": width,
-            "screenHeight": height,
+            "armed": ws in self.armed_clients,
+            "screenWidth": active_mon["width"],
+            "screenHeight": active_mon["height"],
+            "monitors": monitors,
+            "selectedMonitor": idx,
         }
         try:
             await ws.send(json.dumps(payload))
         except Exception:
             pass
 
-    def _prompt_origin_approval(self, origin: str) -> bool:
+    def _prompt_origin_approval(self, origin: str | None) -> bool:
+        display_origin = origin or "(Local File / ไม่ระบุ Origin)"
         result = user32.MessageBoxW(
             None,
             (
                 f"เว็บไซต์ต่อไปนี้ต้องการเชื่อมต่อควบคุมเมาส์และคีย์บอร์ด:\n\n"
-                f"{origin}\n\n"
+                f"{display_origin}\n\n"
                 f"คุณต้องการอนุญาตให้เว็บไซต์นี้ควบคุมเครื่องหรือไม่?"
             ),
             "AnySupport RemoteAgent - ยืนยันความปลอดภัย",
@@ -828,12 +985,12 @@ class RemoteAgentApp:
     async def _ensure_origin_authorized(self, ws: ServerConnection, origin: str | None) -> bool:
         if is_origin_trusted(origin):
             return True
-        assert origin is not None
-        if origin in self.session_approved_origins:
+        origin_key = origin or "__no_origin__"
+        if origin_key in self.session_approved_origins:
             return True
         approved = await asyncio.to_thread(self._prompt_origin_approval, origin)
         if approved:
-            self.session_approved_origins.add(origin)
+            self.session_approved_origins.add(origin_key)
             return True
         await ws.close(code=4003, reason="Origin rejected by user")
         return False
@@ -865,9 +1022,21 @@ class RemoteAgentApp:
                     self.controller.release_all_inputs()
                     continue
 
-                if msg_type == "cam_frame":
+                if msg_type == "session_state":
                     if not await self._ensure_origin_authorized(ws, origin):
                         break
+                    if bool(msg.get("active", False)):
+                        self.armed_clients.add(ws)
+                    else:
+                        self.armed_clients.discard(ws)
+                        self.controller.release_all_inputs()
+                    self.refresh_tray()
+                    await self._send_status(ws)
+                    continue
+
+                if msg_type == "cam_frame":
+                    if ws not in self.armed_clients or not await self._ensure_origin_authorized(ws, origin):
+                        continue
                     data_b64 = msg.get("data")
                     if isinstance(data_b64, str) and len(data_b64) < 500_000:
                         self._queue_cam_frame(data_b64)
@@ -877,24 +1046,26 @@ class RemoteAgentApp:
                     self._schedule_cam_stop()
                     continue
 
-                if self.paused:
+                if self.paused or ws not in self.armed_clients:
                     continue
 
                 # Verify browser Origin before accepting any system/input control event
                 if not await self._ensure_origin_authorized(ws, origin):
                     break
 
-                await self._dispatch_control_event(msg_type, msg)
+                await self._dispatch_control_event(ws, msg_type, msg)
         except ConnectionClosed:
             pass
         finally:
             self.clients.discard(ws)
-            if not self.clients:
+            self.armed_clients.discard(ws)
+            if not self.armed_clients:
                 self.controller.release_all_inputs()
+            if not self.clients:
                 self._schedule_cam_stop()
             self.refresh_tray()
 
-    async def _dispatch_control_event(self, msg_type: str | None, msg: dict[str, Any]) -> None:
+    async def _dispatch_control_event(self, ws: ServerConnection, msg_type: str | None, msg: dict[str, Any]) -> None:
         try:
             if msg_type == "mousemove":
                 self.controller.move_mouse(float(msg.get("x", 0.5)), float(msg.get("y", 0.5)))
@@ -932,6 +1103,18 @@ class RemoteAgentApp:
                     self.controller.send_hotkey([str(k) for k in keys])
             elif msg_type == "paste_text":
                 self.controller.paste_text(str(msg.get("text", "")))
+            elif msg_type == "set_clipboard":
+                self.controller.set_clipboard_text(str(msg.get("text", "")))
+            elif msg_type == "get_clipboard":
+                clip_text = self.controller.get_clipboard_text()
+                if clip_text:
+                    await ws.send(json.dumps({"type": "clipboard_sync", "text": clip_text}))
+            elif msg_type == "set_monitor":
+                self.controller.set_monitor(int(msg.get("index", 0)))
+                await self._broadcast_status()
+            elif msg_type == "match_monitor":
+                self.controller.match_monitor(int(msg.get("width", 0)), int(msg.get("height", 0)))
+                await self._broadcast_status()
             elif msg_type == "sys_cmd":
                 self.controller.run_sys_command(str(msg.get("cmd", "")))
         except (TypeError, ValueError):
@@ -1355,9 +1538,39 @@ class RemoteAgentApp:
                 MB_OK | MB_TOPMOST,
             )
 
+    async def _broadcast_clipboard(self, text: str) -> None:
+        payload = json.dumps({"type": "clipboard_sync", "text": text})
+        for ws in list(self.armed_clients):
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
+
+    def _clipboard_watch_loop(self) -> None:
+        last_seq = int(user32.GetClipboardSequenceNumber())
+        last_text = ""
+        while not self._closing:
+            time.sleep(0.7)
+            if self._closing or not self.armed_clients:
+                last_seq = int(user32.GetClipboardSequenceNumber())
+                continue
+            seq = int(user32.GetClipboardSequenceNumber())
+            if seq == last_seq:
+                continue
+            last_seq = seq
+            if seq == self.controller.last_own_clip_seq:
+                continue
+            text = self.controller.get_clipboard_text()
+            if text and text != last_text and self.loop:
+                last_text = text
+                asyncio.run_coroutine_threadsafe(self._broadcast_clipboard(text), self.loop)
+
     def run(self) -> None:
         ws_thread = threading.Thread(target=self._run_ws_thread, daemon=True)
         ws_thread.start()
+
+        clip_thread = threading.Thread(target=self._clipboard_watch_loop, daemon=True)
+        clip_thread.start()
 
         self.root = self._build_control_window()
 

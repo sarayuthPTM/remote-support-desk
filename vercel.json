@@ -26,6 +26,13 @@
         { "key": "Content-Type", "value": "application/octet-stream" },
         { "key": "Content-Disposition", "value": "attachment; filename=\"RemoteAgent.exe\"" }
       ]
+    },
+    {
+      "source": "/RemoteAgent.zip",
+      "headers": [
+        { "key": "Content-Type", "value": "application/zip" },
+        { "key": "Content-Disposition", "value": "attachment; filename=\"RemoteAgent.zip\"" }
+      ]
     }
   ]
 }

@@ -97,6 +97,15 @@
             </span>
           </div>
 
+          <div id="agentUpdateBanner" class="hidden mb-3 p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-900">
+            <span class="font-bold">⚠️ พบ RemoteAgent รุ่นเก่า:</span> กรุณาดาวน์โหลดรุ่นใหม่ (<span id="agentTargetVerText">v2.4.0</span>) เพื่อความปลอดภัยสูงสุด กล้องลอย 2 จอ และแชร์ Clipboard
+          </div>
+
+          <div id="hostMonitorRow" class="hidden mb-3 flex items-center justify-between gap-2 p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs">
+            <span class="font-semibold text-[#1E3A8A]">🖥️ จอที่ควบคุม:</span>
+            <select id="hostMonitorSelect" onchange="selectHostMonitor(this.value)" class="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:border-[#1E3A8A]"></select>
+          </div>
+
           <h2 class="text-xl font-bold text-slate-900 mb-1">รหัสประจำเครื่องของคุณ</h2>
           <p class="text-xs text-slate-500 mb-4">กดปุ่มเริ่มแชร์หน้าจอ แล้วแจ้งรหัส 6 หลักนี้ให้ผู้ช่วยเหลือทราบ</p>
 
@@ -115,10 +124,18 @@
           </label>
 
           <!-- ปุ่มสั่งงานหลัก -->
-          <div class="space-y-2.5">
-            <a id="downloadAgentLink" href="./RemoteAgent.exe" download="RemoteAgent.exe" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm transition flex items-center justify-center gap-2 text-sm">
-              <span>⬇ ดาวน์โหลดโปรแกรมจิ๋ว (RemoteAgent.exe)</span>
-            </a>
+          <div class="space-y-2">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <a id="downloadAgentLink" href="./RemoteAgent.exe" download="RemoteAgent.exe" class="sm:col-span-2 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm transition flex items-center justify-center gap-1.5 text-sm">
+                <span>⬇ โหลด RemoteAgent.exe</span>
+              </a>
+              <a id="downloadAgentZipLink" href="./RemoteAgent.zip" download="RemoteAgent.zip" title="ใช้เมื่อเบราว์เซอร์บล็อกไฟล์ .exe" class="py-2.5 px-3 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold transition flex items-center justify-center gap-1 text-xs">
+                <span>📦 แบบ .ZIP</span>
+              </a>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+              💡 หาก Chrome บล็อกการโหลด: กด <strong>Ctrl+J</strong> → กด <strong>⋮</strong> → เลือก <strong>"ดาวน์โหลดไฟล์ที่น่าสงสัย"</strong> (หรือโหลดแบบ <strong>.ZIP</strong> แล้วแตกไฟล์)
+            </p>
 
             <button id="startHostBtn" onclick="startHostSession()" class="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-900 font-bold shadow-sm transition flex items-center justify-center gap-2 text-sm">
               <span>เริ่มแชร์หน้าจอและสร้างรหัส 6 หลัก</span>
@@ -208,14 +225,29 @@
             ตัดการเชื่อมต่อ
           </button>
           <span id="adminConnStatus" class="text-xs text-slate-500 ml-1 font-medium">พร้อมเชื่อมต่อ</span>
+          <span id="adminIceBadge" class="hidden text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200"></span>
         </div>
 
-        <!-- เครื่องมือควบคุมหน้าจอ / วาดจอ / ไมค์ / แคปภาพ -->
+        <!-- เครื่องมือควบคุมหน้าจอ / วาดจอ / ไมค์ / คุณภาพ / แคปภาพ -->
         <div class="flex flex-wrap items-center gap-2">
           <label class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 cursor-pointer text-xs font-semibold text-slate-700">
             <input id="enableControlToggle" type="checkbox" checked class="accent-[#1E3A8A] w-4 h-4" />
             <span>ควบคุมเมาส์/คีย์บอร์ด</span>
           </label>
+
+          <div class="flex items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200 text-xs">
+            <span class="font-semibold text-slate-600">📶 ภาพ:</span>
+            <select id="qualitySelect" onchange="changeStreamQuality(this.value)" class="bg-transparent font-bold text-[#1E3A8A] focus:outline-none cursor-pointer">
+              <option value="low">ประหยัดเน็ต</option>
+              <option value="medium" selected>ปกติ</option>
+              <option value="high">คมชัด</option>
+            </select>
+          </div>
+
+          <div id="adminMonitorWrap" class="hidden items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200 text-xs">
+            <span class="font-semibold text-slate-600">🖥️ จอ:</span>
+            <select id="adminMonitorSelect" onchange="requestMonitorChange(this.value)" class="bg-transparent font-bold text-[#1E3A8A] focus:outline-none cursor-pointer"></select>
+          </div>
 
           <button id="drawModeBtn" onclick="toggleDrawMode()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition">
             ✏️ ปากกาวาดจอ: ปิด
@@ -294,6 +326,28 @@
           <input id="adminFileInput" type="file" class="text-xs text-slate-600 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1E3A8A] hover:file:bg-blue-100 w-full" />
           <button id="sendFileBtn" onclick="sendFileToHost()" class="bg-[#1E3A8A] hover:bg-blue-900 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold px-3 py-2 rounded-xl whitespace-nowrap flex items-center gap-1.5">
             <span>ส่งไฟล์</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- แถบแชร์ Clipboard สองทาง -->
+      <div class="bg-white border border-slate-200 rounded-2xl px-4 py-2 flex flex-wrap items-center justify-between gap-2 shadow-sm">
+        <div class="flex flex-wrap items-center gap-2">
+          <label class="flex items-center gap-1.5 text-xs font-bold text-[#1E3A8A] cursor-pointer">
+            <input id="autoClipboardToggle" type="checkbox" checked class="accent-[#1E3A8A] w-4 h-4" />
+            <span>📋 แชร์ Clipboard สองทาง</span>
+          </label>
+          <button onclick="syncAdminClipboardToHost()" class="bg-blue-50 hover:bg-blue-100 text-[#1E3A8A] border border-blue-200 text-xs font-semibold px-2.5 py-1 rounded-lg transition">
+            ส่งคลิปบอร์ดฉัน → ปลายทาง
+          </button>
+          <button onclick="requestHostClipboard()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs font-semibold px-2.5 py-1 rounded-lg transition">
+            ดึงคลิปบอร์ดปลายทาง
+          </button>
+        </div>
+        <div class="flex items-center gap-1.5 flex-1 min-w-[220px] max-w-md">
+          <input id="adminSyncedClipPreview" type="text" readonly placeholder="ข้อความ Clipboard ที่ซิงก์จากปลายทางจะขึ้นที่นี่..." class="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs text-slate-700 focus:outline-none" />
+          <button id="copySyncedClipBtn" onclick="copySyncedClipboard()" class="bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-medium px-2.5 py-1 rounded-lg shrink-0">
+            คัดลอก
           </button>
         </div>
       </div>
@@ -383,9 +437,9 @@
   <!-- ================= MODAL ตั้งค่า ICE / TURN SERVER ================= -->
   <div id="iceSettingsModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
     <div class="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl">
-      <h3 class="text-lg font-bold text-[#1E3A8A] mb-1">ตั้งค่า ICE / TURN Server (ตัวเลือกเสริม)</h3>
-      <p class="text-xs text-slate-500 mb-4">
-        ใช้สำหรับเครือข่ายที่มี Firewall เข้มงวดหรือ Symmetric NAT หากใช้งานทั่วไปไม่จำเป็นต้องกรอก
+      <h3 class="text-lg font-bold text-[#1E3A8A] mb-1">ตั้งค่า ICE / TURN Server (สำหรับข้าม Firewall)</h3>
+      <p class="text-xs text-slate-500 mb-3">
+        ระบบเริ่มต้นใช้ STUN ฟรี (Google + Cloudflare) หากใช้งานข้ามเครือข่ายโรงเรียนที่มี Firewall/Symmetric NAT แล้วภาพไม่ขึ้น แนะนำสมัคร TURN ฟรี (เช่น Metered Open Relay 500MB/เดือน หรือ coturn) แล้วนำค่ามากรอกด้านล่าง
       </p>
       <div class="space-y-3 text-sm">
         <div>
@@ -441,9 +495,16 @@
   <script>
     const PEER_PREFIX = "anysupport-th-v2-";
     const AGENT_WS_URL = "ws://127.0.0.1:8765";
+    const REQUIRED_AGENT_VERSION = "2.4.0";
     const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
     const FILE_CHUNK_SIZE = 48 * 1024; // 48 KB raw bytes per chunk
     const TURN_STORAGE_KEY = "anysupport_custom_turn_v1";
+
+    const QUALITY_PRESETS = {
+      low: { label: "ประหยัดเน็ต", maxBitrate: 450_000, scaleResolutionDownBy: 2.0, maxFramerate: 12 },
+      medium: { label: "ปกติ", maxBitrate: 1_500_000, scaleResolutionDownBy: 1.25, maxFramerate: 24 },
+      high: { label: "คมชัด", maxBitrate: 4_000_000, scaleResolutionDownBy: 1.0, maxFramerate: 30 }
+    };
 
     const DEFAULT_STUN_SERVERS = [
       { urls: "stun:stun.l.google.com:19302" },
@@ -475,6 +536,9 @@
     let isAdminChatOpen = false;
     let adminUnreadCount = 0;
     let lastMoveSent = 0;
+    let lastSyncedClipText = "";
+    let currentQualityPreset = "medium";
+    let hostMonitors = [];
 
     const activeMouseButtons = new Set();
     const incomingFiles = new Map();
@@ -648,6 +712,42 @@
       }
     }
 
+    function compareSemver(a, b) {
+      const pa = String(a || "0.0.0").split(".").map((n) => parseInt(n, 10) || 0);
+      const pb = String(b || "0.0.0").split(".").map((n) => parseInt(n, 10) || 0);
+      for (let i = 0; i < 3; i++) {
+        if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+        if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+      }
+      return 0;
+    }
+
+    function updateMonitorDropdown(selectEl, monitors, selectedIdx) {
+      if (!selectEl || !Array.isArray(monitors)) return;
+      selectEl.replaceChildren();
+      monitors.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = String(m.index);
+        opt.textContent = `${m.primary ? "จอหลัก" : `จอที่ ${m.index + 1}`} (${m.width}×${m.height})`;
+        if (m.index === selectedIdx) opt.selected = true;
+        selectEl.appendChild(opt);
+      });
+    }
+
+    function selectHostMonitor(indexStr) {
+      const idx = parseInt(indexStr, 10);
+      if (Number.isNaN(idx)) return;
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({ type: "set_monitor", index: idx }));
+      }
+    }
+
+    function requestMonitorChange(indexStr) {
+      const idx = parseInt(indexStr, 10);
+      if (Number.isNaN(idx)) return;
+      sendControlEvent({ type: "set_monitor", index: idx });
+    }
+
     function connectLocalAgent() {
       if (currentMode !== "host") return;
       if (
@@ -664,6 +764,9 @@
         ws.onopen = () => {
           if (localAgentWs !== ws) return;
           updateAgentBadge("ready");
+          if (dataConn && dataConn.open) {
+            ws.send(JSON.stringify({ type: "session_state", active: true }));
+          }
         };
 
         ws.onmessage = (event) => {
@@ -677,6 +780,38 @@
               const roleTag = msg.isAdmin ? " (Admin)" : "";
               updateAgentBadge("ready", roleTag);
             }
+
+            const banner = document.getElementById("agentUpdateBanner");
+            if (msg.version && compareSemver(msg.version, REQUIRED_AGENT_VERSION) < 0) {
+              document.getElementById("agentTargetVerText").textContent = `v${REQUIRED_AGENT_VERSION} (ปัจจุบัน v${msg.version})`;
+              banner.classList.remove("hidden");
+            } else {
+              banner.classList.add("hidden");
+            }
+
+            if (Array.isArray(msg.monitors) && msg.monitors.length > 0) {
+              hostMonitors = msg.monitors;
+              const row = document.getElementById("hostMonitorRow");
+              const sel = document.getElementById("hostMonitorSelect");
+              updateMonitorDropdown(sel, msg.monitors, Number(msg.selectedMonitor) || 0);
+              if (msg.monitors.length > 1) {
+                row.classList.remove("hidden");
+              } else {
+                row.classList.add("hidden");
+              }
+              if (dataConn && dataConn.open) {
+                dataConn.send(JSON.stringify({
+                  type: "monitors_info",
+                  monitors: msg.monitors,
+                  selectedMonitor: Number(msg.selectedMonitor) || 0
+                }));
+              }
+            }
+          } else if (msg.type === "clipboard_sync" && typeof msg.text === "string") {
+            if (dataConn && dataConn.open && msg.text !== lastSyncedClipText) {
+              lastSyncedClipText = msg.text;
+              dataConn.send(JSON.stringify({ type: "clipboard_sync", text: msg.text }));
+            }
           }
         };
 
@@ -689,6 +824,8 @@
           if (localAgentWs !== ws) return;
           localAgentWs = null;
           updateAgentBadge("offline");
+          document.getElementById("agentUpdateBanner").classList.add("hidden");
+          document.getElementById("hostMonitorRow").classList.add("hidden");
         };
       } catch {
         updateAgentBadge("offline");
@@ -875,15 +1012,49 @@
           } catch {}
         }
         activeMediaCall = peer.call(conn.peer, localStream, { metadata: { kind: "screen" } });
+        setTimeout(() => applyStreamQualityPreset(currentQualityPreset), 600);
       }
       if (peer && localCamStream) {
         sendOutgoingCameraCall(conn.peer);
+      }
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({ type: "session_state", active: true }));
+        const track = localStream && localStream.getVideoTracks()[0];
+        const settings = track && track.getSettings ? track.getSettings() : null;
+        if (settings && settings.width && settings.height) {
+          localAgentWs.send(JSON.stringify({
+            type: "match_monitor",
+            width: settings.width,
+            height: settings.height
+          }));
+        } else {
+          localAgentWs.send(JSON.stringify({ type: "ping" }));
+        }
       }
 
       conn.on("data", (rawMsg) => {
         const parsed = safeParseMessage(rawMsg);
         if (!parsed) return;
 
+        if (parsed.type === "set_quality") {
+          applyStreamQualityPreset(parsed.preset || "medium");
+          return;
+        }
+        if (parsed.type === "clipboard_sync") {
+          if (typeof parsed.text === "string" && parsed.text) {
+            lastSyncedClipText = parsed.text;
+            if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+              localAgentWs.send(JSON.stringify({ type: "set_clipboard", text: parsed.text }));
+            }
+          }
+          return;
+        }
+        if (parsed.type === "request_clipboard") {
+          if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+            localAgentWs.send(JSON.stringify({ type: "get_clipboard" }));
+          }
+          return;
+        }
         if (parsed.type === "cam_state") {
           if (!parsed.active) {
             clearRemoteCameraFeed("host");
@@ -943,6 +1114,7 @@
         clearRemoteCameraFeed("host");
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
           localAgentWs.send(JSON.stringify({ type: "release_all" }));
+          localAgentWs.send(JSON.stringify({ type: "session_state", active: false }));
         }
         if (localStream) {
           document.getElementById("hostStatusText").textContent = "รอผู้ช่วยเหลือกรอกรหัสเพื่อเชื่อมต่อ...";
@@ -982,6 +1154,7 @@
       clearRemoteCameraFeed("host");
       if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
         localAgentWs.send(JSON.stringify({ type: "release_all" }));
+        localAgentWs.send(JSON.stringify({ type: "session_state", active: false }));
       }
 
       localPreviewVideo.srcObject = null;
@@ -1071,6 +1244,31 @@
         conn.on("data", (rawMsg) => {
           const parsed = safeParseMessage(rawMsg);
           if (!parsed) return;
+          if (parsed.type === "monitors_info" && Array.isArray(parsed.monitors)) {
+            const wrap = document.getElementById("adminMonitorWrap");
+            const sel = document.getElementById("adminMonitorSelect");
+            updateMonitorDropdown(sel, parsed.monitors, Number(parsed.selectedMonitor) || 0);
+            if (parsed.monitors.length > 1) {
+              wrap.classList.remove("hidden");
+              wrap.classList.add("flex");
+            } else {
+              wrap.classList.add("hidden");
+              wrap.classList.remove("flex");
+            }
+            return;
+          }
+          if (parsed.type === "quality_ack") {
+            const sel = document.getElementById("qualitySelect");
+            if (sel && QUALITY_PRESETS[parsed.preset]) {
+              sel.value = parsed.preset;
+              showToast(`ปรับคุณภาพภาพเป็น "${QUALITY_PRESETS[parsed.preset].label}" แล้ว`, "info");
+            }
+            return;
+          }
+          if (parsed.type === "clipboard_sync" && typeof parsed.text === "string") {
+            handleRemoteClipboardReceived(parsed.text);
+            return;
+          }
           if (parsed.type === "cam_state") {
             if (!parsed.active) {
               clearRemoteCameraFeed("admin");
@@ -1136,6 +1334,27 @@
         }
         activeMediaCall = call;
         call.answer();
+        if (call.peerConnection) {
+          const pc = call.peerConnection;
+          const updateIceBadge = () => {
+            const badge = document.getElementById("adminIceBadge");
+            if (!badge) return;
+            const st = pc.iceConnectionState;
+            badge.classList.remove("hidden");
+            if (st === "connected" || st === "completed") {
+              badge.textContent = "ICE: เชื่อมต่อแล้ว";
+              badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200";
+            } else if (st === "failed" || st === "disconnected") {
+              badge.textContent = "ICE: ขัดข้อง (ลองตั้งค่า TURN)";
+              badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
+            } else {
+              badge.textContent = `ICE: ${st}`;
+              badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
+            }
+          };
+          pc.addEventListener("iceconnectionstatechange", updateIceBadge);
+          updateIceBadge();
+        }
         call.on("stream", (remoteStream) => {
           remoteVideo.srcObject = remoteStream;
           remoteVideo.muted = !isRemoteAudioEnabled;
@@ -1193,6 +1412,12 @@
       adminUnreadCount = 0;
       updateAdminUnreadBadge();
       clearChatBox("adminChatMessages", "adminChatEmptyMsg", "เริ่มพิมพ์ข้อความเพื่อพูดคุยกัน...");
+      document.getElementById("adminIceBadge").classList.add("hidden");
+      const monWrap = document.getElementById("adminMonitorWrap");
+      monWrap.classList.add("hidden");
+      monWrap.classList.remove("flex");
+      document.getElementById("adminSyncedClipPreview").value = "";
+      lastSyncedClipText = "";
     }
 
     function disconnectAdminSession(silent = false, keepStatus = false) {
@@ -1381,6 +1606,9 @@
 
     screenContainer.addEventListener("focus", () => {
       document.getElementById("keyboardFocusBadge").classList.remove("hidden");
+      if (document.getElementById("autoClipboardToggle").checked) {
+        syncAdminClipboardToHost(true);
+      }
     });
 
     screenContainer.addEventListener("blur", () => {
@@ -1388,12 +1616,17 @@
       sendControlEvent({ type: "release_all" });
     });
 
-    screenContainer.addEventListener("keydown", (e) => {
+    screenContainer.addEventListener("keydown", async (e) => {
       if (!document.getElementById("enableControlToggle").checked) return;
       if (e.isComposing || e.key === "Process") return;
       e.preventDefault();
       const isModifier = ["Control", "Alt", "Shift", "Meta"].includes(e.key);
       if (e.repeat && isModifier) return;
+
+      // Sync Admin clipboard before forwarding Ctrl+V when 2-way clipboard is active
+      if ((e.ctrlKey || e.metaKey) && e.code === "KeyV" && document.getElementById("autoClipboardToggle").checked) {
+        await syncAdminClipboardToHost(true);
+      }
       sendControlEvent({
         type: "keydown",
         key: e.key,
@@ -2269,6 +2502,118 @@
 
     initDraggableResizableCam("admin", true);
     initDraggableResizableCam("host", false);
+
+    // -----------------------------------------------------------------------
+    // 9. ปรับคุณภาพภาพหน้าจอ (ประหยัดเน็ต / ปกติ / คมชัด) & แชร์ Clipboard สองทาง
+    // -----------------------------------------------------------------------
+    function changeStreamQuality(preset) {
+      currentQualityPreset = QUALITY_PRESETS[preset] ? preset : "medium";
+      if (!dataConn || !dataConn.open) {
+        showToast("เชื่อมต่อก่อนจึงจะปรับคุณภาพภาพปลายทางได้", "warning");
+        return;
+      }
+      sendControlEvent({ type: "set_quality", preset: currentQualityPreset });
+    }
+
+    async function applyStreamQualityPreset(preset) {
+      const cfg = QUALITY_PRESETS[preset] || QUALITY_PRESETS.medium;
+      currentQualityPreset = preset in QUALITY_PRESETS ? preset : "medium";
+
+      if (localStream) {
+        const track = localStream.getVideoTracks()[0];
+        if (track && track.applyConstraints) {
+          try {
+            await track.applyConstraints({ frameRate: { ideal: cfg.maxFramerate, max: cfg.maxFramerate } });
+          } catch {}
+        }
+      }
+
+      if (activeMediaCall && activeMediaCall.peerConnection) {
+        const senders = activeMediaCall.peerConnection.getSenders();
+        for (const sender of senders) {
+          if (sender.track && sender.track.kind === "video") {
+            try {
+              const params = sender.getParameters();
+              if (!params.encodings || !params.encodings.length) {
+                params.encodings = [{}];
+              }
+              params.encodings[0].maxBitrate = cfg.maxBitrate;
+              params.encodings[0].scaleResolutionDownBy = cfg.scaleResolutionDownBy;
+              params.encodings[0].maxFramerate = cfg.maxFramerate;
+              await sender.setParameters(params);
+            } catch {}
+          }
+        }
+      }
+
+      if (dataConn && dataConn.open) {
+        dataConn.send(JSON.stringify({ type: "quality_ack", preset: currentQualityPreset }));
+      }
+    }
+
+    async function syncAdminClipboardToHost(silent = false) {
+      if (!dataConn || !dataConn.open) {
+        if (!silent) showToast("กรุณาเชื่อมต่อกับเครื่องปลายทางก่อน", "warning");
+        return;
+      }
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        if (!silent) showToast("เบราว์เซอร์ไม่อนุญาตให้อ่าน Clipboard อัตโนมัติ", "warning");
+        return;
+      }
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!text) {
+          if (!silent) showToast("ไม่มีข้อความใน Clipboard ของคุณ", "info");
+          return;
+        }
+        if (silent && text === lastSyncedClipText) return;
+        lastSyncedClipText = text;
+        sendControlEvent({ type: "clipboard_sync", text });
+        if (!silent) {
+          showToast("ส่งข้อความจาก Clipboard ไปยังเครื่องปลายทางแล้ว", "success");
+        }
+      } catch (err) {
+        if (!silent) {
+          showToast("กรุณาอนุญาตสิทธิ์ Clipboard ในเบราว์เซอร์ก่อน", "warning");
+        }
+      }
+    }
+
+    function requestHostClipboard() {
+      if (!dataConn || !dataConn.open) {
+        showToast("กรุณาเชื่อมต่อกับเครื่องปลายทางก่อน", "warning");
+        return;
+      }
+      sendControlEvent({ type: "request_clipboard" });
+    }
+
+    function handleRemoteClipboardReceived(text) {
+      lastSyncedClipText = text;
+      const preview = document.getElementById("adminSyncedClipPreview");
+      if (preview) preview.value = text;
+
+      if (document.getElementById("autoClipboardToggle").checked && document.hasFocus() && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+      showToast("📋 อัปเดต Clipboard จากเครื่องปลายทางแล้ว", "info");
+    }
+
+    async function copySyncedClipboard() {
+      const preview = document.getElementById("adminSyncedClipPreview");
+      const btn = document.getElementById("copySyncedClipBtn");
+      const text = preview.value;
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        preview.select();
+        document.execCommand("copy");
+      }
+      btn.textContent = "คัดลอกแล้ว ✓";
+      setTimeout(() => {
+        btn.textContent = "คัดลอก";
+      }, 1500);
+    }
   </script>
 </body>
 </html>
