@@ -781,19 +781,19 @@
     let agentOfflineTimer = null;
     let lastAgentState = "init";
     let hasWarnedOldAgent = false;
-    let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "", blockedByBrowser: false };
+    let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "", blockedByBrowser: false, lnaState: "unknown" };
     let lastAdminAgentWarnKey = "";
     let adminRemoteAgentInfo = null;
 
-    async function checkLocalNetworkBlocked() {
+    async function getLocalNetworkAccessState() {
       try {
         if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
-          return false;
+          return "unknown";
         }
         const status = await navigator.permissions.query({ name: "local-network-access" });
-        return Boolean(status && status.state === "denied");
+        return status && status.state ? status.state : "unknown";
       } catch {
-        return false;
+        return "unknown";
       }
     }
 
@@ -831,8 +831,11 @@
         return;
       }
       if (info && !info.online) {
-        if (info.blockedByBrowser) {
+        if (info.blockedByBrowser || info.lnaState === "denied") {
           pill.textContent = "🟠 Chrome ปลายทางบล็อก RemoteAgent (กดไอคอนข้าง URL → อนุญาต)";
+          pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-amber-50/95 text-amber-900 border-amber-300";
+        } else if (info.lnaState === "prompt") {
+          pill.textContent = "🟠 รอปลายทางกด 'อนุญาต' Chrome หรือเปิด RemoteAgent.exe";
           pill.className = "absolute top-3 left-1/2 -translate-x-1/2 z-20 text-[11px] font-semibold px-3 py-1 rounded-full border shadow-lg pointer-events-none max-w-[90%] truncate bg-amber-50/95 text-amber-900 border-amber-300";
         } else {
           pill.textContent = "🔴 ดูได้อย่างเดียว — ปลายทางยังไม่เปิด RemoteAgent.exe";
@@ -854,8 +857,11 @@
       if (badge) {
         badge.classList.remove("hidden");
         if (!info || !info.online) {
-          if (info && info.blockedByBrowser) {
+          if (info && (info.blockedByBrowser || info.lnaState === "denied")) {
             badge.textContent = "⚠️ Chrome ปลายทางบล็อกการเชื่อม RemoteAgent";
+            badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300";
+          } else if (info && info.lnaState === "prompt") {
+            badge.textContent = "🟠 รอปลายทางกดอนุญาต Chrome / เปิด RemoteAgent";
             badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300";
           } else {
             badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
@@ -899,10 +905,11 @@
       agentOfflineTimer = setTimeout(async () => {
         agentOfflineTimer = null;
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
-        const isBlocked = await checkLocalNetworkBlocked();
+        const lnaState = await getLocalNetworkAccessState();
+        const isBlocked = lnaState === "denied";
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
         const prevState = lastAgentState;
-        const prevBlocked = Boolean(lastAgentInfo.blockedByBrowser);
+        const prevLna = lastAgentInfo.lnaState || "unknown";
         lastAgentState = "offline";
         lastAgentInfo = {
           online: false,
@@ -910,15 +917,19 @@
           isAdmin: false,
           armed: false,
           version: "",
-          blockedByBrowser: isBlocked
+          blockedByBrowser: isBlocked,
+          lnaState
         };
-        if (prevState !== "offline" || prevBlocked !== isBlocked) {
+        if (prevState !== "offline" || prevLna !== lnaState) {
           sendHostAgentStatusToAdmin();
         }
         if (retryBtn) retryBtn.classList.remove("hidden");
         if (isBlocked) {
           badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 whitespace-nowrap truncate";
           badge.textContent = "⚠️ Chrome บล็อกการเชื่อม RemoteAgent (กดไอคอนข้าง URL → อนุญาต)";
+        } else if (lnaState === "prompt") {
+          badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 whitespace-nowrap truncate";
+          badge.textContent = "🟠 เปิด RemoteAgent.exe แล้วกด 'เชื่อมใหม่' เพื่ออนุญาต Chrome";
         } else {
           badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200 whitespace-nowrap truncate";
           badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe";
@@ -997,7 +1008,8 @@
               isAdmin: Boolean(msg.isAdmin),
               armed: Boolean(msg.armed),
               version: String(msg.version || ""),
-              blockedByBrowser: false
+              blockedByBrowser: false,
+              lnaState: "granted"
             };
             sendHostAgentStatusToAdmin();
             if (msg.paused) {
