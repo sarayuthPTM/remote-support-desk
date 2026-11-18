@@ -775,7 +775,20 @@
     let agentOfflineTimer = null;
     let lastAgentState = "init";
     let hasWarnedOldAgent = false;
-    let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "" };
+    let lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "", blockedByBrowser: false };
+    let lastAdminAgentWarnKey = "";
+
+    async function checkLocalNetworkBlocked() {
+      try {
+        if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
+          return false;
+        }
+        const status = await navigator.permissions.query({ name: "local-network-access" });
+        return Boolean(status && status.state === "denied");
+      } catch {
+        return false;
+      }
+    }
 
     function sendHostAgentStatusToAdmin() {
       if (dataConn && dataConn.open) {
@@ -788,8 +801,13 @@
       if (!badge) return;
       badge.classList.remove("hidden");
       if (!info || !info.online) {
-        badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
-        badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
+        if (info && info.blockedByBrowser) {
+          badge.textContent = "⚠️ Chrome ปลายทางบล็อกการเชื่อม RemoteAgent";
+          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300";
+        } else {
+          badge.textContent = "⚠️ ปลายทางยังไม่เปิด RemoteAgent.exe (ดูจอได้อย่างเดียว)";
+          badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200";
+        }
       } else if (info.paused) {
         badge.textContent = "⏸ ปลายทางหยุดควบคุมชั่วคราว";
         badge.className = "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200";
@@ -821,14 +839,32 @@
 
       const delay = lastAgentState === "init" ? 400 : 1800;
       if (agentOfflineTimer) return;
-      agentOfflineTimer = setTimeout(() => {
+      agentOfflineTimer = setTimeout(async () => {
         agentOfflineTimer = null;
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
+        const isBlocked = await checkLocalNetworkBlocked();
+        if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) return;
+        const prevState = lastAgentState;
+        const prevBlocked = Boolean(lastAgentInfo.blockedByBrowser);
         lastAgentState = "offline";
-        lastAgentInfo = { online: false, paused: false, isAdmin: false, armed: false, version: "" };
-        sendHostAgentStatusToAdmin();
-        badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200 whitespace-nowrap truncate";
-        badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe";
+        lastAgentInfo = {
+          online: false,
+          paused: false,
+          isAdmin: false,
+          armed: false,
+          version: "",
+          blockedByBrowser: isBlocked
+        };
+        if (prevState !== "offline" || prevBlocked !== isBlocked) {
+          sendHostAgentStatusToAdmin();
+        }
+        if (isBlocked) {
+          badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-300 whitespace-nowrap truncate";
+          badge.textContent = "⚠️ Chrome บล็อกการเชื่อม RemoteAgent (กดไอคอนข้าง URL → อนุญาต)";
+        } else {
+          badge.className = "text-xs font-medium px-2.5 py-1 rounded-full bg-rose-50 text-rose-600 border border-rose-200 whitespace-nowrap truncate";
+          badge.textContent = "● ยังไม่ได้เปิด RemoteAgent.exe";
+        }
         document.getElementById("agentUpdateBanner").classList.add("hidden");
         document.getElementById("downloadTipBox").classList.remove("hidden");
         document.getElementById("hostMonitorRow").classList.add("hidden");
@@ -902,7 +938,8 @@
               paused: Boolean(msg.paused),
               isAdmin: Boolean(msg.isAdmin),
               armed: Boolean(msg.armed),
-              version: String(msg.version || "")
+              version: String(msg.version || ""),
+              blockedByBrowser: false
             };
             sendHostAgentStatusToAdmin();
             if (msg.paused) {
@@ -1409,8 +1446,14 @@
           if (!parsed) return;
           if (parsed.type === "host_agent_status") {
             updateAdminHostAgentBadge(parsed);
-            if (!parsed.online) {
-              showToast("⚠️ เครื่องปลายทางยังไม่ได้เปิด RemoteAgent.exe จึงดูหน้าจอได้อย่างเดียว", "warning");
+            const warnKey = parsed.online ? "online" : parsed.blockedByBrowser ? "blocked" : "offline";
+            if (warnKey !== lastAdminAgentWarnKey) {
+              lastAdminAgentWarnKey = warnKey;
+              if (warnKey === "blocked") {
+                showToast("⚠️ Chrome ปลายทางบล็อกการเชื่อม RemoteAgent (ให้ปลายทางกดไอคอนข้าง URL → อนุญาต)", "warning");
+              } else if (warnKey === "offline") {
+                showToast("⚠️ เครื่องปลายทางยังไม่ได้เปิด RemoteAgent.exe จึงดูหน้าจอได้อย่างเดียว", "warning");
+              }
             }
             return;
           }
@@ -1586,6 +1629,7 @@
       clearChatBox("adminChatMessages", "adminChatEmptyMsg", "เริ่มพิมพ์ข้อความเพื่อพูดคุยกัน...");
       document.getElementById("adminIceBadge").classList.add("hidden");
       document.getElementById("adminHostAgentBadge").classList.add("hidden");
+      lastAdminAgentWarnKey = "";
       const monWrap = document.getElementById("adminMonitorWrap");
       monWrap.classList.add("hidden");
       monWrap.classList.remove("flex");
