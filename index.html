@@ -496,7 +496,7 @@
   <script>
     const PEER_PREFIX = "anysupport-th-v2-";
     const AGENT_WS_URL = "ws://127.0.0.1:8765";
-    const REQUIRED_AGENT_VERSION = "2.4.0";
+    const REQUIRED_AGENT_VERSION = "2.5.0";
     const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB
     const FILE_CHUNK_SIZE = 48 * 1024; // 48 KB raw bytes per chunk
     const TURN_STORAGE_KEY = "anysupport_custom_turn_v1";
@@ -555,6 +555,78 @@
     // -----------------------------------------------------------------------
     // Helper: Toast Notification, Button Loading State, Safe JSON, ICE Config
     // -----------------------------------------------------------------------
+    const DEFAULT_PAGE_TITLE = document.title;
+    let titleFlashTimer = null;
+
+    function playNotificationChime() {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const now = ctx.currentTime;
+        const notes = [880, 1174.66];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(freq, now + idx * 0.11);
+          gain.gain.setValueAtTime(0.001, now + idx * 0.11);
+          gain.gain.exponentialRampToValueAtTime(0.12, now + idx * 0.11 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.11 + 0.22);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + idx * 0.11);
+          osc.stop(now + idx * 0.11 + 0.24);
+        });
+        setTimeout(() => ctx.close().catch(() => {}), 600);
+      } catch {}
+    }
+
+    function stopTitleFlash() {
+      if (titleFlashTimer) {
+        clearInterval(titleFlashTimer);
+        titleFlashTimer = null;
+      }
+      document.title = DEFAULT_PAGE_TITLE;
+    }
+
+    function flashTitleNotification(previewText) {
+      if (!document.hidden) return;
+      stopTitleFlash();
+      let on = true;
+      const alertTitle = `💬 ${String(previewText || "ข้อความใหม่").slice(0, 24)} - AnySupport`;
+      document.title = alertTitle;
+      titleFlashTimer = setInterval(() => {
+        if (!document.hidden) {
+          stopTitleFlash();
+          return;
+        }
+        on = !on;
+        document.title = on ? alertTitle : DEFAULT_PAGE_TITLE;
+      }, 900);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) stopTitleFlash();
+    });
+
+    function notifyHostIncomingChat(text) {
+      playNotificationChime();
+      flashTitleNotification(text);
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({
+          type: "chat_notify",
+          sender: "ผู้ช่วยเหลือ",
+          text
+        }));
+      }
+      if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification("💬 ข้อความใหม่จากผู้ช่วยเหลือ", { body: text });
+        } catch {}
+      }
+    }
+
     function showToast(message, variant = "info") {
       const container = document.getElementById("toastContainer");
       const styles = {
@@ -842,6 +914,12 @@
               lastSyncedClipText = msg.text;
               dataConn.send(JSON.stringify({ type: "clipboard_sync", text: msg.text }));
             }
+          } else if (msg.type === "host_chat_reply" && typeof msg.text === "string") {
+            const reply = msg.text.trim();
+            if (reply && dataConn && dataConn.open) {
+              dataConn.send(JSON.stringify({ type: "chat_text", text: reply, sender: "host" }));
+              appendChatMessage("hostChatMessages", "hostChatEmptyMsg", "ฉัน", reply, true);
+            }
           }
         };
 
@@ -975,6 +1053,10 @@
       const startBtn = document.getElementById("startHostBtn");
       setButtonLoading(startBtn, true, "กำลังขอสิทธิ์แชร์หน้าจอ...");
 
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        Notification.requestPermission().catch(() => {});
+      }
+
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({
           video: { cursor: "always", frameRate: { ideal: 30, max: 60 } },
@@ -1093,7 +1175,8 @@
           const text = String(parsed.text || "");
           document.getElementById("hostReceivedText").value = text;
           appendChatMessage("hostChatMessages", "hostChatEmptyMsg", "ผู้ช่วยเหลือ", text, false);
-          showToast("ได้รับข้อความใหม่จากผู้ช่วยเหลือ", "info");
+          showToast(`💬 ผู้ช่วยเหลือ: ${text}`, "info");
+          notifyHostIncomingChat(text);
           return;
         }
         if (parsed.type === "file_start") {
@@ -1306,6 +1389,8 @@
           if (parsed.type === "chat_text") {
             const text = String(parsed.text || "");
             appendChatMessage("adminChatMessages", "adminChatEmptyMsg", "ผู้ขอความช่วยเหลือ", text, false);
+            playNotificationChime();
+            flashTitleNotification(text);
             if (!isAdminChatOpen) {
               adminUnreadCount += 1;
               updateAdminUnreadBadge();

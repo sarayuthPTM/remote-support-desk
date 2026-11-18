@@ -21,6 +21,7 @@ import time
 import tkinter as tk
 from typing import Any
 import webbrowser
+import winsound
 
 from PIL import Image, ImageDraw, ImageTk
 import pystray
@@ -30,7 +31,7 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.4.0"
+AGENT_VERSION = "2.5.0"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
@@ -879,6 +880,12 @@ class RemoteAgentApp:
         self._cam_drag_offset = (0, 0)
         self._cam_resize_start = (0, 0, 280, 224)
         self._cam_size = (280, 224)
+        self._chat_win: tk.Toplevel | None = None
+        self._chat_msg_lbl: tk.Label | None = None
+        self._chat_sender_lbl: tk.Label | None = None
+        self._chat_reply_entry: tk.Entry | None = None
+        self._chat_hide_after_id: str | None = None
+        self._chat_latest_text: str = ""
         self._icon_cache = {
             "waiting": create_tray_icon_image("waiting"),
             "connected": create_tray_icon_image("connected"),
@@ -1044,6 +1051,15 @@ class RemoteAgentApp:
 
                 if msg_type == "cam_stop":
                     self._schedule_cam_stop()
+                    continue
+
+                if msg_type == "chat_notify":
+                    if ws not in self.armed_clients or not await self._ensure_origin_authorized(ws, origin):
+                        continue
+                    text = str(msg.get("text", "")).strip()
+                    sender = str(msg.get("sender", "ผู้ช่วยเหลือ")).strip() or "ผู้ช่วยเหลือ"
+                    if text:
+                        self._schedule_chat_toast(sender, text)
                     continue
 
                 if self.paused or ws not in self.armed_clients:
@@ -1369,6 +1385,193 @@ class RemoteAgentApp:
             self._cam_label.config(image=photo)
         except Exception:
             pass
+
+    def _schedule_chat_toast(self, sender: str, text: str) -> None:
+        if not self.root or self._closing:
+            return
+        try:
+            self.root.after(0, lambda: self._show_chat_toast(sender, text))
+        except Exception:
+            pass
+
+    def _dismiss_chat_toast(self) -> None:
+        if self._chat_hide_after_id and self.root:
+            try:
+                self.root.after_cancel(self._chat_hide_after_id)
+            except Exception:
+                pass
+            self._chat_hide_after_id = None
+        if self._chat_win and self._chat_win.winfo_exists():
+            self._chat_win.withdraw()
+
+    def _send_chat_reply_from_toast(self, event: tk.Event | None = None) -> None:
+        if not self._chat_reply_entry:
+            return
+        reply = self._chat_reply_entry.get().strip()
+        if not reply:
+            return
+        self._chat_reply_entry.delete(0, tk.END)
+        if self.loop and self.armed_clients:
+            payload = json.dumps({"type": "host_chat_reply", "text": reply})
+            for client_ws in list(self.armed_clients):
+                asyncio.run_coroutine_threadsafe(client_ws.send(payload), self.loop)
+        self._dismiss_chat_toast()
+
+    def _copy_chat_toast_text(self) -> None:
+        if self._chat_latest_text:
+            self.controller.set_clipboard_text(self._chat_latest_text)
+
+    def _show_chat_toast(self, sender: str, text: str) -> None:
+        if not self.root or self._closing:
+            return
+        self._chat_latest_text = text
+
+        try:
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+
+        if not self._chat_win or not self._chat_win.winfo_exists():
+            win = tk.Toplevel(self.root)
+            win.title("AnySupport Chat")
+            win.overrideredirect(True)
+            win.attributes("-topmost", True)
+            win.configure(bg="#1E3A8A")
+
+            bar = tk.Frame(win, bg="#1E3A8A", padx=10, pady=6)
+            bar.pack(fill="x")
+
+            sender_lbl = tk.Label(
+                bar,
+                text=f"💬 ข้อความจาก{sender}",
+                font=("Segoe UI", 9, "bold"),
+                fg="#FBBF24",
+                bg="#1E3A8A",
+            )
+            sender_lbl.pack(side="left")
+
+            tk.Button(
+                bar,
+                text="✕",
+                command=self._dismiss_chat_toast,
+                font=("Segoe UI", 9, "bold"),
+                fg="#FFFFFF",
+                bg="#1E3A8A",
+                activebackground="#DC2626",
+                activeforeground="#FFFFFF",
+                relief="flat",
+                bd=0,
+                cursor="hand2",
+                padx=4,
+            ).pack(side="right")
+
+            body = tk.Frame(win, bg="#FFFFFF", padx=12, pady=10, highlightbackground="#CBD5E1", highlightthickness=1)
+            body.pack(fill="both", expand=True)
+
+            msg_lbl = tk.Label(
+                body,
+                text="",
+                font=("Segoe UI", 10),
+                fg="#0F172A",
+                bg="#FFFFFF",
+                justify="left",
+                anchor="w",
+                wraplength=320,
+            )
+            msg_lbl.pack(fill="x", pady=(0, 8))
+
+            btn_row = tk.Frame(body, bg="#FFFFFF")
+            btn_row.pack(fill="x", pady=(0, 8))
+
+            tk.Button(
+                btn_row,
+                text="📋 คัดลอกข้อความ",
+                command=self._copy_chat_toast_text,
+                font=("Segoe UI", 8, "bold"),
+                bg="#EFF6FF",
+                fg="#1E3A8A",
+                activebackground="#DBEAFE",
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=3,
+            ).pack(side="left")
+
+            tk.Button(
+                btn_row,
+                text="🌐 เปิดหน้าเว็บ",
+                command=open_web_portal,
+                font=("Segoe UI", 8),
+                bg="#F1F5F9",
+                fg="#334155",
+                activebackground="#E2E8F0",
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=3,
+            ).pack(side="right")
+
+            reply_row = tk.Frame(body, bg="#FFFFFF")
+            reply_row.pack(fill="x")
+
+            entry = tk.Entry(
+                reply_row,
+                font=("Segoe UI", 9),
+                bg="#F8FAFC",
+                fg="#0F172A",
+                relief="solid",
+                bd=1,
+            )
+            entry.pack(side="left", fill="x", expand=True, ipady=3, padx=(0, 6))
+            entry.bind("<Return>", self._send_chat_reply_from_toast)
+            entry.bind("<FocusIn>", lambda e: self._cancel_chat_autohide())
+
+            tk.Button(
+                reply_row,
+                text="ส่งตอบ",
+                command=self._send_chat_reply_from_toast,
+                font=("Segoe UI", 9, "bold"),
+                bg="#1E3A8A",
+                fg="#FFFFFF",
+                activebackground="#172554",
+                activeforeground="#FFFFFF",
+                relief="flat",
+                cursor="hand2",
+                padx=10,
+                pady=3,
+            ).pack(side="right")
+
+            self._chat_win = win
+            self._chat_sender_lbl = sender_lbl
+            self._chat_msg_lbl = msg_lbl
+            self._chat_reply_entry = entry
+
+        if self._chat_sender_lbl:
+            self._chat_sender_lbl.config(text=f"💬 ข้อความจาก{sender}")
+        if self._chat_msg_lbl:
+            self._chat_msg_lbl.config(text=text)
+
+        win = self._chat_win
+        win.update_idletasks()
+        w = max(356, win.winfo_reqwidth())
+        h = win.winfo_reqheight()
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        win.geometry(f"{w}x{h}+{max(0, sw - w - 16)}+{max(0, sh - h - 56)}")
+        win.deiconify()
+        win.attributes("-topmost", True)
+        win.lift()
+
+        self._cancel_chat_autohide()
+        self._chat_hide_after_id = self.root.after(15000, self._dismiss_chat_toast)
+
+    def _cancel_chat_autohide(self) -> None:
+        if self._chat_hide_after_id and self.root:
+            try:
+                self.root.after_cancel(self._chat_hide_after_id)
+            except Exception:
+                pass
+            self._chat_hide_after_id = None
 
     def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
         self._shutdown_all()
