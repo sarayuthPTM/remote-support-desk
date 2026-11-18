@@ -9,6 +9,7 @@ import asyncio
 import base64
 import ctypes
 from ctypes import wintypes
+import io
 import json
 import os
 import re
@@ -29,7 +30,7 @@ from websockets.exceptions import ConnectionClosed
 
 HOST = "127.0.0.1"
 PORT = 8765
-AGENT_VERSION = "2.2.0"
+AGENT_VERSION = "2.3.0"
 WINDOW_TITLE = "AnySupport RemoteAgent"
 WEB_URL = os.environ.get("ANYSUPPORT_WEB_URL", "https://remote-support-desk-xi.vercel.app")
 MUTEX_NAME = "Local\\AnySupportWebRemoteAgentMutex"
@@ -719,6 +720,16 @@ class RemoteAgentApp:
         self._pause_btn: tk.Button | None = None
         self._dot_label: tk.Label | None = None
         self._closing = False
+        self._cam_lock = threading.Lock()
+        self._pending_cam_bytes: bytes | None = None
+        self._cam_render_pending = False
+        self._cam_hidden_by_user = False
+        self._cam_win: tk.Toplevel | None = None
+        self._cam_label: tk.Label | None = None
+        self._cam_photo: ImageTk.PhotoImage | None = None
+        self._cam_drag_offset = (0, 0)
+        self._cam_resize_start = (0, 0, 280, 224)
+        self._cam_size = (280, 224)
         self._icon_cache = {
             "waiting": create_tray_icon_image("waiting"),
             "connected": create_tray_icon_image("connected"),
@@ -854,6 +865,18 @@ class RemoteAgentApp:
                     self.controller.release_all_inputs()
                     continue
 
+                if msg_type == "cam_frame":
+                    if not await self._ensure_origin_authorized(ws, origin):
+                        break
+                    data_b64 = msg.get("data")
+                    if isinstance(data_b64, str) and len(data_b64) < 500_000:
+                        self._queue_cam_frame(data_b64)
+                    continue
+
+                if msg_type == "cam_stop":
+                    self._schedule_cam_stop()
+                    continue
+
                 if self.paused:
                     continue
 
@@ -868,6 +891,7 @@ class RemoteAgentApp:
             self.clients.discard(ws)
             if not self.clients:
                 self.controller.release_all_inputs()
+                self._schedule_cam_stop()
             self.refresh_tray()
 
     async def _dispatch_control_event(self, msg_type: str | None, msg: dict[str, Any]) -> None:
@@ -1009,6 +1033,159 @@ class RemoteAgentApp:
                 self.root.after(0, self.root.destroy)
             except Exception:
                 pass
+
+    def _queue_cam_frame(self, data_b64: str) -> None:
+        try:
+            raw = base64.b64decode(data_b64)
+        except Exception:
+            return
+        with self._cam_lock:
+            self._pending_cam_bytes = raw
+            if self._cam_render_pending or self._closing or not self.root:
+                return
+            self._cam_render_pending = True
+        try:
+            self.root.after(0, self._render_cam_frame)
+        except Exception:
+            with self._cam_lock:
+                self._cam_render_pending = False
+
+    def _schedule_cam_stop(self) -> None:
+        with self._cam_lock:
+            self._pending_cam_bytes = None
+        if self.root and not self._closing:
+            try:
+                self.root.after(0, self._hide_cam_window_and_reset)
+            except Exception:
+                pass
+
+    def _hide_cam_window_and_reset(self) -> None:
+        self._cam_hidden_by_user = False
+        if self._cam_win and self._cam_win.winfo_exists():
+            self._cam_win.withdraw()
+        self._cam_photo = None
+
+    def _user_hide_cam_window(self) -> None:
+        self._cam_hidden_by_user = True
+        if self._cam_win and self._cam_win.winfo_exists():
+            self._cam_win.withdraw()
+
+    def _ensure_cam_window(self) -> tk.Toplevel | None:
+        if not self.root or self._closing:
+            return None
+        if self._cam_win and self._cam_win.winfo_exists():
+            return self._cam_win
+
+        win = tk.Toplevel(self.root)
+        win.title("AnySupport Cam")
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg="#1E3A8A")
+
+        w, h = self._cam_size
+        sw = win.winfo_screenwidth()
+        pos_x = max(0, sw - w - 16)
+        win.geometry(f"{w}x{h}+{pos_x}+16")
+
+        bar = tk.Frame(win, bg="#1E3A8A", height=26, cursor="fleur")
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+
+        title_lbl = tk.Label(
+            bar,
+            text="📷 กล้องผู้ช่วยเหลือ (ลากย้าย/ปรับขนาดได้)",
+            font=("Segoe UI", 8, "bold"),
+            fg="#FBBF24",
+            bg="#1E3A8A",
+            cursor="fleur",
+        )
+        title_lbl.pack(side="left", padx=8)
+
+        close_btn = tk.Button(
+            bar,
+            text="✕",
+            command=self._user_hide_cam_window,
+            font=("Segoe UI", 8, "bold"),
+            fg="#FFFFFF",
+            bg="#1E3A8A",
+            activebackground="#DC2626",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=6,
+        )
+        close_btn.pack(side="right", fill="y")
+
+        video_lbl = tk.Label(win, bg="#0F172A", cursor="fleur")
+        video_lbl.pack(fill="both", expand=True, padx=2, pady=(0, 2))
+
+        grip = tk.Label(
+            win,
+            text="◢",
+            font=("Segoe UI", 9, "bold"),
+            fg="#FBBF24",
+            bg="#0F172A",
+            cursor="size_nw_se",
+        )
+        grip.place(relx=1.0, rely=1.0, anchor="se", x=-3, y=-3)
+
+        def start_drag(event: tk.Event) -> None:
+            self._cam_drag_offset = (event.x_root - win.winfo_x(), event.y_root - win.winfo_y())
+
+        def on_drag(event: tk.Event) -> None:
+            nx = event.x_root - self._cam_drag_offset[0]
+            ny = event.y_root - self._cam_drag_offset[1]
+            win.geometry(f"+{nx}+{ny}")
+
+        for widget in (bar, title_lbl, video_lbl):
+            widget.bind("<Button-1>", start_drag)
+            widget.bind("<B1-Motion>", on_drag)
+
+        def start_resize(event: tk.Event) -> None:
+            self._cam_resize_start = (event.x_root, event.y_root, win.winfo_width(), win.winfo_height())
+
+        def on_resize(event: tk.Event) -> None:
+            sx, sy, sw0, sh0 = self._cam_resize_start
+            nw = max(180, min(720, sw0 + (event.x_root - sx)))
+            nh = max(145, min(560, sh0 + (event.y_root - sy)))
+            self._cam_size = (nw, nh)
+            win.geometry(f"{nw}x{nh}")
+
+        grip.bind("<Button-1>", start_resize)
+        grip.bind("<B1-Motion>", on_resize)
+
+        self._cam_win = win
+        self._cam_label = video_lbl
+        return win
+
+    def _render_cam_frame(self) -> None:
+        with self._cam_lock:
+            raw = self._pending_cam_bytes
+            self._pending_cam_bytes = None
+            self._cam_render_pending = False
+
+        if not raw or self._closing or self._cam_hidden_by_user:
+            return
+
+        win = self._ensure_cam_window()
+        if not win or not self._cam_label:
+            return
+
+        if win.state() == "withdrawn":
+            win.deiconify()
+            win.attributes("-topmost", True)
+
+        try:
+            img = Image.open(io.BytesIO(raw))
+            target_w = max(120, self._cam_size[0] - 4)
+            target_h = max(90, self._cam_size[1] - 28)
+            img = img.resize((target_w, target_h), Image.Resampling.BILINEAR)
+            photo = ImageTk.PhotoImage(img)
+            self._cam_photo = photo
+            self._cam_label.config(image=photo)
+        except Exception:
+            pass
 
     def _on_exit(self, icon: pystray.Icon, item: Item) -> None:
         self._shutdown_all()

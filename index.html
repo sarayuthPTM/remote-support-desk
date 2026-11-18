@@ -127,6 +127,10 @@
             <button id="stopHostBtn" onclick="stopHostSession()" class="hidden w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold transition text-sm">
               หยุดแชร์หน้าจอทันที (ตัดการเชื่อมต่อ)
             </button>
+
+            <button id="hostCamToggleBtn" onclick="toggleCamera()" class="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 border border-slate-300 font-semibold transition flex items-center justify-center gap-2 text-sm">
+              <span>📷 เปิดกล้องของฉัน</span>
+            </button>
           </div>
         </div>
 
@@ -225,6 +229,10 @@
             <span>🎤 เปิดไมค์คุย</span>
           </button>
 
+          <button id="adminCamToggleBtn" onclick="toggleCamera()" class="bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition flex items-center gap-1.5">
+            <span>📷 เปิดกล้อง</span>
+          </button>
+
           <button id="remoteAudioBtn" onclick="toggleRemoteAudio()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-medium transition">
             🔇 เสียงปลายทาง: ปิด
           </button>
@@ -302,6 +310,20 @@
         <div id="remotePlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 px-4 text-center">
           <p class="text-base font-semibold text-slate-300">กรอกรหัส 6 หลักด้านบนเพื่อดูหน้าจอและควบคุมเมาส์</p>
           <p class="text-xs text-slate-400 mt-1">คลิกในกรอบภาพเพื่อเริ่มบังคับเมาส์และกดแป้นพิมพ์</p>
+        </div>
+
+        <!-- กรอบกล้องลอยมุมบนขวาฝั่งผู้ช่วยเหลือ (ลากย้าย + ปรับขนาดได้) -->
+        <div id="adminCamPanel" class="hidden absolute top-3 right-3 z-30 w-64 bg-slate-900 border-2 border-amber-400/80 rounded-xl shadow-2xl overflow-hidden select-none" style="min-width:180px;max-width:680px;">
+          <div id="adminCamDragHandle" class="bg-[#1E3A8A] text-white px-2.5 py-1.5 flex items-center justify-between cursor-move">
+            <span class="text-[11px] font-bold text-amber-300 truncate">📷 กล้องวิดีโอ (ลากย้ายได้)</span>
+            <button onclick="hideCamPanel('admin')" title="ซ่อนกรอบกล้อง" class="text-slate-200 hover:text-white text-xs font-bold px-1">✕</button>
+          </div>
+          <div class="relative bg-slate-950 aspect-video flex items-center justify-center">
+            <video id="adminRemoteCamVideo" autoplay muted playsinline class="w-full h-full object-cover block"></video>
+            <video id="adminLocalCamVideo" autoplay muted playsinline class="hidden absolute bottom-1.5 left-1.5 w-16 aspect-video object-cover rounded border border-amber-400 shadow bg-slate-900"></video>
+            <span id="adminCamEmptyLabel" class="absolute text-[11px] text-slate-400">รอภาพจากกล้องปลายทาง...</span>
+            <div id="adminCamResizeHandle" title="ลากเพื่อปรับขนาด" class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize flex items-end justify-end pr-0.5 pb-0.5 text-[10px] text-amber-400 font-bold">◢</div>
+          </div>
         </div>
 
         <!-- กล่องแชทลอยมุมขวาล่างสำหรับพูดคุย 2 ทาง -->
@@ -395,6 +417,23 @@
     </div>
   </div>
 
+  <!-- กรอบกล้องลอยมุมบนขวาฝั่งผู้ขอความช่วยเหลือ (ลากย้าย + ปรับขนาดได้ + ลอยทับหน้าต่างเบราว์เซอร์ได้) -->
+  <div id="hostCamPanel" class="hidden fixed top-20 right-4 z-40 w-64 bg-slate-900 border-2 border-amber-400/90 rounded-xl shadow-2xl overflow-hidden select-none" style="min-width:180px;max-width:680px;">
+    <div id="hostCamDragHandle" class="bg-[#1E3A8A] text-white px-2.5 py-1.5 flex items-center justify-between cursor-move">
+      <span class="text-[11px] font-bold text-amber-300 truncate">📷 กล้องวิดีโอ (ลากย้ายได้)</span>
+      <div class="flex items-center gap-1">
+        <button onclick="popoutHostCamPip()" title="ลอยทับหน้าต่างอื่น (Picture-in-Picture)" class="text-[10px] bg-blue-800 hover:bg-blue-700 text-white px-1.5 py-0.5 rounded">⧉</button>
+        <button onclick="hideCamPanel('host')" title="ซ่อนกรอบกล้อง" class="text-slate-200 hover:text-white text-xs font-bold px-1">✕</button>
+      </div>
+    </div>
+    <div class="relative bg-slate-950 aspect-video flex items-center justify-center">
+      <video id="hostRemoteCamVideo" autoplay muted playsinline class="w-full h-full object-cover block"></video>
+      <video id="hostLocalCamVideo" autoplay muted playsinline class="hidden absolute bottom-1.5 left-1.5 w-16 aspect-video object-cover rounded border border-amber-400 shadow bg-slate-900"></video>
+      <span id="hostCamEmptyLabel" class="absolute text-[11px] text-slate-400">รอภาพจากกล้องผู้ช่วยเหลือ...</span>
+      <div id="hostCamResizeHandle" title="ลากเพื่อปรับขนาด" class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize flex items-end justify-end pr-0.5 pb-0.5 text-[10px] text-amber-400 font-bold">◢</div>
+    </div>
+  </div>
+
   <!-- เสียงสำหรับคุยไมค์ -->
   <audio id="remoteAudio" autoplay></audio>
 
@@ -419,8 +458,13 @@
     let pendingConn = null;
     let activeMediaCall = null;
     let activeVoiceCall = null;
+    let activeOutgoingCamCall = null;
+    let activeIncomingCamCall = null;
     let localStream = null;
     let voiceStream = null;
+    let localCamStream = null;
+    let hostCamForwardTimer = null;
+    let hostCamCanvas = null;
     let localAgentWs = null;
     let agentReconnectTimer = null;
     let isDrawMode = false;
@@ -674,6 +718,8 @@
         peer.destroy();
         peer = null;
       }
+      stopCameraSession();
+      clearRemoteCameraFeed("host");
 
       const hostPeer = new Peer(PEER_PREFIX + pin, { config: getRtcConfig() });
       peer = hostPeer;
@@ -733,10 +779,14 @@
         });
       });
 
-      // รับสายไมโครโฟนเฉพาะจากผู้ช่วยเหลือที่ได้รับอนุญาตแล้วเท่านั้น
+      // รับสายไมโครโฟน หรือสายกล้อง จากผู้ช่วยเหลือที่ได้รับอนุญาตแล้วเท่านั้น
       hostPeer.on("call", (call) => {
         if (!dataConn || !dataConn.open || call.peer !== dataConn.peer) {
           call.close();
+          return;
+        }
+        if (call.metadata && call.metadata.kind === "camera") {
+          handleIncomingCameraCall("host", call);
           return;
         }
         call.answer();
@@ -824,13 +874,22 @@
             activeMediaCall.close();
           } catch {}
         }
-        activeMediaCall = peer.call(conn.peer, localStream);
+        activeMediaCall = peer.call(conn.peer, localStream, { metadata: { kind: "screen" } });
+      }
+      if (peer && localCamStream) {
+        sendOutgoingCameraCall(conn.peer);
       }
 
       conn.on("data", (rawMsg) => {
         const parsed = safeParseMessage(rawMsg);
         if (!parsed) return;
 
+        if (parsed.type === "cam_state") {
+          if (!parsed.active) {
+            clearRemoteCameraFeed("host");
+          }
+          return;
+        }
         if (parsed.type === "chat_text") {
           const text = String(parsed.text || "");
           document.getElementById("hostReceivedText").value = text;
@@ -881,6 +940,7 @@
           activeMediaCall = null;
         }
         document.getElementById("remoteAudio").srcObject = null;
+        clearRemoteCameraFeed("host");
         if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
           localAgentWs.send(JSON.stringify({ type: "release_all" }));
         }
@@ -918,6 +978,8 @@
         peer.destroy();
         peer = null;
       }
+      stopCameraSession();
+      clearRemoteCameraFeed("host");
       if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
         localAgentWs.send(JSON.stringify({ type: "release_all" }));
       }
@@ -1001,11 +1063,20 @@
           joinBtn.classList.add("hidden");
           discBtn.classList.remove("hidden");
           statusEl.textContent = "รอผู้ขอความช่วยเหลือคลิกอนุญาต...";
+          if (localCamStream) {
+            sendOutgoingCameraCall(conn.peer);
+          }
         });
 
         conn.on("data", (rawMsg) => {
           const parsed = safeParseMessage(rawMsg);
           if (!parsed) return;
+          if (parsed.type === "cam_state") {
+            if (!parsed.active) {
+              clearRemoteCameraFeed("admin");
+            }
+            return;
+          }
           if (parsed.type === "chat_text") {
             const text = String(parsed.text || "");
             appendChatMessage("adminChatMessages", "adminChatEmptyMsg", "ผู้ขอความช่วยเหลือ", text, false);
@@ -1054,6 +1125,10 @@
 
       adminPeer.on("call", (call) => {
         if (peer !== adminPeer) return;
+        if (call.metadata && call.metadata.kind === "camera") {
+          handleIncomingCameraCall("admin", call);
+          return;
+        }
         if (activeMediaCall) {
           try {
             activeMediaCall.close();
@@ -1105,6 +1180,8 @@
         voiceStream = null;
         updateMicButton(false);
       }
+      stopCameraSession();
+      clearRemoteCameraFeed("admin");
       remoteVideo.srcObject = null;
       document.getElementById("remotePlaceholder").classList.remove("hidden");
       document.getElementById("disconnectAdminBtn").classList.add("hidden");
@@ -1129,6 +1206,8 @@
         peer.destroy();
         peer = null;
       }
+      stopCameraSession();
+      clearRemoteCameraFeed("host");
       resetAdminMediaUi();
       if (!keepStatus) {
         const statusEl = document.getElementById("adminConnStatus");
@@ -1759,7 +1838,7 @@
         setButtonLoading(btn, true, "กำลังเปิดไมค์...");
         try {
           voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          activeVoiceCall = peer.call(dataConn.peer, voiceStream);
+          activeVoiceCall = peer.call(dataConn.peer, voiceStream, { metadata: { kind: "voice" } });
           btn.disabled = false;
           updateMicButton(true);
           showToast("เปิดไมโครโฟนสนทนาแล้ว", "success");
@@ -1839,6 +1918,357 @@
         document.exitFullscreen().catch(() => {});
       }
     }
+
+    // -----------------------------------------------------------------------
+    // 8. ระบบกล้อง 2 ทาง (เปิด/ปิดได้ + ลากย้าย + ปรับขนาด + ลอยทับ Windows)
+    // -----------------------------------------------------------------------
+    function getCameraUiIds(role) {
+      return role === "host"
+        ? {
+            panel: "hostCamPanel",
+            drag: "hostCamDragHandle",
+            resize: "hostCamResizeHandle",
+            remoteVid: "hostRemoteCamVideo",
+            localVid: "hostLocalCamVideo",
+            emptyLbl: "hostCamEmptyLabel",
+            btn: "hostCamToggleBtn"
+          }
+        : {
+            panel: "adminCamPanel",
+            drag: "adminCamDragHandle",
+            resize: "adminCamResizeHandle",
+            remoteVid: "adminRemoteCamVideo",
+            localVid: "adminLocalCamVideo",
+            emptyLbl: "adminCamEmptyLabel",
+            btn: "adminCamToggleBtn"
+          };
+    }
+
+    function updateCamButtons(isOn) {
+      for (const role of ["host", "admin"]) {
+        const btn = document.getElementById(getCameraUiIds(role).btn);
+        if (!btn) continue;
+        btn.replaceChildren();
+        const span = document.createElement("span");
+        if (isOn) {
+          span.textContent = "📷 กล้อง: เปิดอยู่ (กดเพื่อปิด)";
+          btn.className = role === "host"
+            ? "w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition flex items-center justify-center gap-2 text-sm"
+            : "bg-emerald-600 text-white border border-emerald-700 text-xs px-3 py-2 rounded-xl font-bold transition flex items-center gap-1.5";
+        } else {
+          span.textContent = role === "host" ? "📷 เปิดกล้องของฉัน" : "📷 เปิดกล้อง";
+          btn.className = role === "host"
+            ? "w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 border border-slate-300 font-semibold transition flex items-center justify-center gap-2 text-sm"
+            : "bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-700 border border-slate-300 text-xs px-3 py-2 rounded-xl font-semibold transition flex items-center gap-1.5";
+        }
+        btn.appendChild(span);
+        btn.disabled = false;
+      }
+    }
+
+    function refreshCamPanelVisibility(role) {
+      const ids = getCameraUiIds(role);
+      const panel = document.getElementById(ids.panel);
+      const remoteVid = document.getElementById(ids.remoteVid);
+      const localVid = document.getElementById(ids.localVid);
+      const emptyLbl = document.getElementById(ids.emptyLbl);
+      const hasRemote = Boolean(remoteVid && remoteVid.srcObject);
+      const hasLocal = Boolean(localVid && localVid.srcObject);
+
+      if (hasLocal) {
+        localVid.classList.remove("hidden");
+      } else if (localVid) {
+        localVid.classList.add("hidden");
+      }
+
+      if (hasRemote) {
+        emptyLbl.classList.add("hidden");
+      } else {
+        emptyLbl.classList.remove("hidden");
+      }
+
+      if (hasRemote || hasLocal) {
+        panel.classList.remove("hidden");
+      } else {
+        panel.classList.add("hidden");
+      }
+    }
+
+    function hideCamPanel(role) {
+      document.getElementById(getCameraUiIds(role).panel).classList.add("hidden");
+    }
+
+    function sendOutgoingCameraCall(targetPeerId) {
+      if (!peer || !localCamStream || !targetPeerId) return;
+      if (activeOutgoingCamCall) {
+        try {
+          activeOutgoingCamCall.close();
+        } catch {}
+      }
+      activeOutgoingCamCall = peer.call(targetPeerId, localCamStream, {
+        metadata: { kind: "camera" }
+      });
+      sendControlEvent({ type: "cam_state", active: true });
+    }
+
+    function handleIncomingCameraCall(role, call) {
+      if (activeIncomingCamCall) {
+        try {
+          activeIncomingCamCall.close();
+        } catch {}
+      }
+      activeIncomingCamCall = call;
+      call.answer();
+      call.on("stream", (camStream) => {
+        const ids = getCameraUiIds(role);
+        const remoteVid = document.getElementById(ids.remoteVid);
+        remoteVid.srcObject = camStream;
+        remoteVid.play().catch(() => {});
+        refreshCamPanelVisibility(role);
+        if (role === "host") {
+          startHostCamOverlayForwarder(remoteVid);
+        }
+      });
+      call.on("close", () => {
+        if (activeIncomingCamCall === call) {
+          clearRemoteCameraFeed(role);
+        }
+      });
+    }
+
+    function clearRemoteCameraFeed(role) {
+      if (activeIncomingCamCall) {
+        try {
+          activeIncomingCamCall.close();
+        } catch {}
+        activeIncomingCamCall = null;
+      }
+      const remoteVid = document.getElementById(getCameraUiIds(role).remoteVid);
+      if (remoteVid) remoteVid.srcObject = null;
+      if (role === "host") {
+        stopHostCamOverlayForwarder();
+      }
+      refreshCamPanelVisibility(role);
+    }
+
+    function stopCameraSession() {
+      if (activeOutgoingCamCall) {
+        try {
+          activeOutgoingCamCall.close();
+        } catch {}
+        activeOutgoingCamCall = null;
+      }
+      if (localCamStream) {
+        localCamStream.getTracks().forEach((t) => t.stop());
+        localCamStream = null;
+        sendControlEvent({ type: "cam_state", active: false });
+      }
+      for (const role of ["host", "admin"]) {
+        const localVid = document.getElementById(getCameraUiIds(role).localVid);
+        if (localVid) localVid.srcObject = null;
+        refreshCamPanelVisibility(role);
+      }
+      updateCamButtons(false);
+    }
+
+    async function toggleCamera() {
+      const role = currentMode;
+      const btn = document.getElementById(getCameraUiIds(role).btn);
+
+      if (localCamStream) {
+        stopCameraSession();
+        showToast("ปิดกล้องเรียบร้อยแล้ว", "info");
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showToast("เบราว์เซอร์นี้ไม่รองรับการเปิดกล้อง", "error");
+        return;
+      }
+
+      setButtonLoading(btn, true, "กำลังเปิดกล้อง...");
+      try {
+        localCamStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 480, max: 640 }, height: { ideal: 360, max: 480 }, frameRate: { ideal: 15, max: 20 } },
+          audio: false
+        });
+
+        const localVid = document.getElementById(getCameraUiIds(role).localVid);
+        localVid.srcObject = localCamStream;
+        localVid.play().catch(() => {});
+        refreshCamPanelVisibility(role);
+        updateCamButtons(true);
+
+        if (peer && dataConn && dataConn.open) {
+          sendOutgoingCameraCall(dataConn.peer);
+        }
+        showToast("เปิดกล้องเรียบร้อยแล้ว (ประหยัดพลังงาน 15 fps)", "success");
+      } catch (err) {
+        updateCamButtons(false);
+        const msg =
+          err.name === "NotAllowedError"
+            ? "กรุณากดอนุญาตสิทธิ์การใช้กล้องในเบราว์เซอร์"
+            : err.name === "NotFoundError"
+            ? "ไม่พบอุปกรณ์กล้องบนเครื่องนี้"
+            : "ไม่สามารถเปิดกล้องได้: " + err.message;
+        showToast(msg, "error");
+      }
+    }
+
+    function startHostCamOverlayForwarder(videoEl) {
+      stopHostCamOverlayForwarder();
+      if (!hostCamCanvas) {
+        hostCamCanvas = document.createElement("canvas");
+        hostCamCanvas.width = 320;
+        hostCamCanvas.height = 180;
+      }
+      const ctx = hostCamCanvas.getContext("2d");
+      hostCamForwardTimer = setInterval(() => {
+        if (!localAgentWs || localAgentWs.readyState !== WebSocket.OPEN) return;
+        if (!videoEl.srcObject || !videoEl.videoWidth || !videoEl.videoHeight) return;
+        if (localAgentWs.bufferedAmount > 200000) return;
+
+        const targetW = 320;
+        const targetH = Math.max(120, Math.round((videoEl.videoHeight / videoEl.videoWidth) * targetW));
+        if (hostCamCanvas.width !== targetW || hostCamCanvas.height !== targetH) {
+          hostCamCanvas.width = targetW;
+          hostCamCanvas.height = targetH;
+        }
+        ctx.drawImage(videoEl, 0, 0, targetW, targetH);
+        const dataUrl = hostCamCanvas.toDataURL("image/jpeg", 0.65);
+        const b64 = dataUrl.split(",")[1];
+        if (b64) {
+          localAgentWs.send(JSON.stringify({ type: "cam_frame", data: b64 }));
+        }
+      }, 100);
+    }
+
+    function stopHostCamOverlayForwarder() {
+      if (hostCamForwardTimer) {
+        clearInterval(hostCamForwardTimer);
+        hostCamForwardTimer = null;
+      }
+      if (localAgentWs && localAgentWs.readyState === WebSocket.OPEN) {
+        localAgentWs.send(JSON.stringify({ type: "cam_stop" }));
+      }
+    }
+
+    async function popoutHostCamPip() {
+      const videoEl = document.getElementById("hostRemoteCamVideo");
+      if (!videoEl.srcObject) {
+        showToast("ยังไม่มีภาพจากกล้องผู้ช่วยเหลือ", "warning");
+        return;
+      }
+      try {
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+        } else if (videoEl.requestPictureInPicture) {
+          await videoEl.requestPictureInPicture();
+        }
+      } catch (err) {
+        showToast("ไม่สามารถเปิด Picture-in-Picture ได้: " + err.message, "warning");
+      }
+    }
+
+    function initDraggableResizableCam(role, boundToContainer) {
+      const ids = getCameraUiIds(role);
+      const panel = document.getElementById(ids.panel);
+      const dragHandle = document.getElementById(ids.drag);
+      const resizeHandle = document.getElementById(ids.resize);
+
+      if (role === "admin") {
+        for (const evtName of ["mousedown", "mousemove", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup", "touchstart", "touchmove", "touchend"]) {
+          panel.addEventListener(evtName, (e) => e.stopPropagation());
+        }
+      }
+
+      const startDrag = (clientX, clientY) => {
+        const rect = panel.getBoundingClientRect();
+        const parentRect = boundToContainer
+          ? panel.parentElement.getBoundingClientRect()
+          : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+
+        panel.style.right = "auto";
+        panel.style.left = `${rect.left - parentRect.left}px`;
+        panel.style.top = `${rect.top - parentRect.top}px`;
+
+        const offsetX = clientX - rect.left;
+        const offsetY = clientY - rect.top;
+
+        const onMove = (mx, my) => {
+          const maxLeft = Math.max(0, parentRect.width - panel.offsetWidth);
+          const maxTop = Math.max(0, parentRect.height - panel.offsetHeight);
+          const nextLeft = Math.max(0, Math.min(maxLeft, mx - parentRect.left - offsetX));
+          const nextTop = Math.max(0, Math.min(maxTop, my - parentRect.top - offsetY));
+          panel.style.left = `${nextLeft}px`;
+          panel.style.top = `${nextTop}px`;
+        };
+
+        const mouseMove = (ev) => onMove(ev.clientX, ev.clientY);
+        const touchMove = (ev) => {
+          if (ev.touches.length) onMove(ev.touches[0].clientX, ev.touches[0].clientY);
+        };
+        const stop = () => {
+          window.removeEventListener("mousemove", mouseMove);
+          window.removeEventListener("mouseup", stop);
+          window.removeEventListener("touchmove", touchMove);
+          window.removeEventListener("touchend", stop);
+        };
+
+        window.addEventListener("mousemove", mouseMove);
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("touchmove", touchMove, { passive: true });
+        window.addEventListener("touchend", stop);
+      };
+
+      dragHandle.addEventListener("mousedown", (e) => {
+        if (e.target.tagName === "BUTTON") return;
+        e.preventDefault();
+        startDrag(e.clientX, e.clientY);
+      });
+
+      dragHandle.addEventListener("touchstart", (e) => {
+        if (e.target.tagName === "BUTTON" || !e.touches.length) return;
+        startDrag(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: true });
+
+      const startResize = (clientX) => {
+        const startW = panel.offsetWidth;
+        const onMove = (mx) => {
+          const nextW = Math.max(180, Math.min(680, startW + (mx - clientX)));
+          panel.style.width = `${nextW}px`;
+        };
+        const mouseMove = (ev) => onMove(ev.clientX);
+        const touchMove = (ev) => {
+          if (ev.touches.length) onMove(ev.touches[0].clientX);
+        };
+        const stop = () => {
+          window.removeEventListener("mousemove", mouseMove);
+          window.removeEventListener("mouseup", stop);
+          window.removeEventListener("touchmove", touchMove);
+          window.removeEventListener("touchend", stop);
+        };
+        window.addEventListener("mousemove", mouseMove);
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("touchmove", touchMove, { passive: true });
+        window.addEventListener("touchend", stop);
+      };
+
+      resizeHandle.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startResize(e.clientX);
+      });
+
+      resizeHandle.addEventListener("touchstart", (e) => {
+        if (!e.touches.length) return;
+        e.stopPropagation();
+        startResize(e.touches[0].clientX);
+      }, { passive: true });
+    }
+
+    initDraggableResizableCam("admin", true);
+    initDraggableResizableCam("host", false);
   </script>
 </body>
 </html>
